@@ -77,6 +77,9 @@ Provider lifecycle records, never terminal text, supply turn state and the
 private activity file in `power.md`. Bounded append caching retains typed turns;
 an unseen oversized gap clears waiting to prevent stale Answer ready. A
 main-chain Claude `AskUserQuestion` with `stop_reason: tool_use` and a tool ID
-means waiting; only its matching user tool result restores working. Reducer
-changes invalidate old receipts so unchanged prompts are reclassified.
+means `needs_input`; only its matching user tool result restores working. A
+structured Codex elicitation or input-request event also means `needs_input`;
+an ordinary completed turn remains waiting. Reducer changes bump the summary
+receipt schema so unchanged prompts are reclassified. The app treats
+`needs_input` as a narrower user-action signal than waiting.
 Typed cleanup uses `cleanup_eligible`.

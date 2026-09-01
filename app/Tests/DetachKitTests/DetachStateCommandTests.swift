@@ -112,6 +112,17 @@ final class DetachStateCommandTests: XCTestCase {
         }
     }
 
+    func testEmitSessionAcceptsStructuredInputState() throws {
+        let output = try DetachStateCommand.run(arguments: [
+            "emit", "session", "codex", "detach-codex-question", "running",
+            "--agent-turn-state", "needs_input",
+            "--agent-turn-id", "turn-1",
+        ])
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: output) as? [String: Any])
+        XCTAssertEqual(object["agent_turn_state"] as? String, "needs_input")
+    }
+
     func testEmitSessionPreservesDisplayNamePlaceholderCharacters() throws {
         for displayName in ["-", "?"] {
             let output = try DetachStateCommand.run(arguments: [
@@ -993,7 +1004,7 @@ final class DetachStateCommandTests: XCTestCase {
         let waitingValues = waitingOutput.split(
             separator: 0, omittingEmptySubsequences: false
         ).dropLast().map { String(decoding: $0, as: UTF8.self) }
-        XCTAssertEqual(Array(waitingValues[28..<30]), ["waiting", "tool-1"])
+        XCTAssertEqual(Array(waitingValues[28..<30]), ["needs_input", "tool-1"])
 
         let receipt = session.appendingPathComponent(
             ".transcript-summary-cache.json")
@@ -1011,11 +1022,11 @@ final class DetachStateCommandTests: XCTestCase {
         let migratedValues = migratedOutput.split(
             separator: 0, omittingEmptySubsequences: false
         ).dropLast().map { String(decoding: $0, as: UTF8.self) }
-        XCTAssertEqual(Array(migratedValues[28..<30]), ["waiting", "tool-1"])
+        XCTAssertEqual(Array(migratedValues[28..<30]), ["needs_input", "tool-1"])
         let migratedReceipt = try XCTUnwrap(
             JSONSerialization.jsonObject(with: Data(contentsOf: receipt))
                 as? [String: Any])
-        XCTAssertEqual(migratedReceipt["schema"] as? Int, 3)
+        XCTAssertEqual(migratedReceipt["schema"] as? Int, 4)
 
         let unrelatedToolResult = Data("""
 
@@ -1033,7 +1044,7 @@ final class DetachStateCommandTests: XCTestCase {
             separator: 0, omittingEmptySubsequences: false
         ).dropLast().map { String(decoding: $0, as: UTF8.self) }
         XCTAssertEqual(
-            Array(stillWaitingValues[28..<30]), ["waiting", "tool-1"])
+            Array(stillWaitingValues[28..<30]), ["needs_input", "tool-1"])
 
         let plainUser = Data("""
 
@@ -1050,7 +1061,7 @@ final class DetachStateCommandTests: XCTestCase {
         let latchedValues = latchedOutput.split(
             separator: 0, omittingEmptySubsequences: false
         ).dropLast().map { String(decoding: $0, as: UTF8.self) }
-        XCTAssertEqual(Array(latchedValues[28..<30]), ["waiting", "tool-1"])
+        XCTAssertEqual(Array(latchedValues[28..<30]), ["needs_input", "tool-1"])
 
         let toolResult = Data("""
 
@@ -1197,7 +1208,9 @@ final class DetachStateCommandTests: XCTestCase {
             count: 4_000).utf8)
         try handle.write(contentsOf: irrelevant)
 
-        XCTAssertEqual(try turnFields(), ["", ""])
+        // The oversized gap must not preserve the old answer-ready state.
+        // The fresh item records still prove the identity of the new turn.
+        XCTAssertEqual(try turnFields(), ["working", "turn-new"])
     }
 
     func testMetaCreateWritesTypedObjectAndRefusesAnExistingFile() throws {
