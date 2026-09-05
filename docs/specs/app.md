@@ -50,9 +50,14 @@ tmux client. Closing the view ends the client.
 Terminal I/O is event-driven. CoreGraphics repaints on changes and uses a
 steady cursor. No terminal poller or frame loop runs. `Command-C/V/F` provide
 native copy, paste, and find. `Ctrl-C` and `Ctrl-V` reach providers as
-conventional control bytes. A Finder drop sends shell-safe paths without
-reading files. Live views move Mac Power to metadata. An exited client offers
-Reconnect.
+conventional control bytes. `Command-Left/Right` send `Ctrl-A/E`, and
+`Command-Backspace` sends `Ctrl-U`, regardless of enhanced keyboard mode.
+`Command-Up/Down` move the local viewport between OSC 133 prompt origins and
+do nothing when no origin exists; they never send shell-history keys. A Finder
+drop sends shell-safe paths without reading files. `Shift-Return` sends tmux's
+stable CSI-u `S-Enter` input regardless of enhanced keyboard mode; the managed
+tmux toggle maps it to multiline input or ordinary Return. Live views move Mac
+Power to metadata. An exited client offers Reconnect.
 
 Cold start paints at most 128 rows and 1 MiB from private preferences. Cached
 rows grant no action, ownership, PID, cleanup, or power claim until a fresh
