@@ -79,4 +79,10 @@ an unseen oversized gap clears waiting to prevent stale Answer ready. A
 main-chain Claude `AskUserQuestion` with `stop_reason: tool_use` and a tool ID
 means waiting; only its matching user tool result restores working. Reducer
 changes invalidate old receipts so unchanged prompts are reclassified.
+A main-chain Claude assistant record with `stop_reason: end_turn` and nonempty
+text also means waiting. Thinking-only, metadata, and tool-use blocks do not
+prove a completed answer. Repeated final text and a later `turn_duration` keep
+the waiting turn ID. A new user request or an assistant `tool_use` continuation
+restores working. A pending `AskUserQuestion` still requires its matching
+result. Schema-4 summary receipts invalidate earlier cached turn states.
 Typed cleanup uses `cleanup_eligible`.

@@ -987,7 +987,7 @@ public enum DetachStateCommand {
     }
 
     private struct TranscriptSummaryReceipt: Codable {
-        static let currentSchema = 3
+        static let currentSchema = 4
         private static let overlapByteCount: UInt64 = 64 * 1_024
 
         var schema: Int

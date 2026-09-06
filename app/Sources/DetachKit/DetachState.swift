@@ -738,8 +738,29 @@ public enum TranscriptDocument {
         }
 
         if type == "system", record["subtype"] as? String == "turn_duration" {
-            if result.pendingToolUseID == nil {
+            if result.pendingToolUseID == nil, result.agentTurnState != .waiting {
                 result.agentTurnState = .waiting
+                result.agentTurnID = turnID
+            }
+            return
+        }
+
+        if type == "assistant",
+           !isJSONTrue(record["isMeta"]),
+           message?["role"] as? String == "assistant",
+           result.pendingToolUseID == nil {
+            if message?["stop_reason"] as? String == "end_turn",
+               hasFinalText(message?["content"]) {
+                // Claude can omit turn_duration. Keep one notification identity
+                // across final text fragments and a later duration record.
+                if result.agentTurnState != .waiting {
+                    result.agentTurnState = .waiting
+                    result.agentTurnID = turnID
+                }
+            } else if message?["stop_reason"] as? String == "tool_use" {
+                // A tool continuation can follow a completed answer without a
+                // new plain user record (for example, after a Stop hook).
+                result.agentTurnState = .working
                 result.agentTurnID = turnID
             }
             return
@@ -779,6 +800,16 @@ public enum TranscriptDocument {
             }
             return identifier
         }.first
+    }
+
+    private static func hasFinalText(_ value: Any?) -> Bool {
+        guard let content = value as? [[String: Any]],
+              !content.contains(where: { $0["type"] as? String == "tool_use" })
+        else { return false }
+        return content.contains {
+            $0["type"] as? String == "text"
+                && ($0["text"] as? String)?.isEmpty == false
+        }
     }
 
     private static func toolResultStatus(
