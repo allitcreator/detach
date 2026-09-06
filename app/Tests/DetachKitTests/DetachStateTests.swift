@@ -547,6 +547,89 @@ final class DetachStateTests: XCTestCase {
                 agentTurnID: "real-user"))
     }
 
+    func testClaudeSummaryCompletesFinalTextWithoutTurnDuration() {
+        let thinking = Data("""
+        {"type":"user","uuid":"request","message":{"role":"user","content":"go"}}
+        {"type":"assistant","uuid":"thinking","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"thinking","thinking":"done"}]}}
+        """.utf8)
+        let working = TranscriptDocument.summary(ofTail: thinking, provider: .claude)
+        XCTAssertEqual(working.agentTurnState, .working)
+
+        let answer = Data("""
+        {"type":"assistant","uuid":"answer","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Done."}]}}
+        """.utf8)
+        let waiting = TranscriptDocument.summary(
+            ofTail: answer, provider: .claude, startingFrom: working)
+        XCTAssertEqual(waiting.agentTurnState, .waiting)
+        XCTAssertEqual(waiting.agentTurnID, "answer")
+        // A cold bounded tail can contain only the final answer.
+        XCTAssertEqual(
+            TranscriptDocument.summary(ofTail: answer, provider: .claude), waiting)
+
+        let trailing = Data("""
+        {"type":"assistant","uuid":"answer-fragment","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"More detail."}]}}
+        {"type":"system","subtype":"turn_duration","uuid":"duration"}
+        """.utf8)
+        XCTAssertEqual(
+            TranscriptDocument.summary(
+                ofTail: trailing, provider: .claude, startingFrom: waiting), waiting)
+    }
+
+    func testClaudeSummaryRejectsUnprovenFinalAnswers() throws {
+        let unsupported: [[String: Any]] = [
+            ["isSidechain": true], ["isMeta": true], ["uuid": ""],
+            ["message": ["role": "user"]],
+            ["message": ["stop_reason": "max_tokens"]],
+            ["message": ["stop_reason": NSNull()]],
+            ["message": ["content": NSNull()]],
+            ["message": ["content": [["type": "text", "text": ""]]]],
+            ["message": ["content": [["type": "text", "text": "Done"],
+                                      ["type": "tool_use", "name": "Bash"]]]],
+        ]
+        for overrides in unsupported {
+            var message: [String: Any] = [
+                "role": "assistant", "stop_reason": "end_turn",
+                "content": [["type": "text", "text": "Done"]],
+            ]
+            message.merge(overrides["message"] as? [String: Any] ?? [:]) { _, new in new }
+            var record: [String: Any] = ["type": "assistant", "uuid": "answer"]
+            record.merge(overrides) { _, new in new }
+            record["message"] = message
+            let summary = TranscriptDocument.summary(
+                ofTail: try JSONSerialization.data(withJSONObject: record),
+                provider: .claude,
+                startingFrom: TranscriptSummary(
+                    agentTurnState: .working, agentTurnID: "request"))
+            XCTAssertEqual(summary.agentTurnState, .working, "\(overrides)")
+            XCTAssertEqual(summary.agentTurnID, "request", "\(overrides)")
+        }
+    }
+
+    func testClaudeSummaryResumesAfterFinalAnswer() {
+        let waiting = TranscriptSummary(agentTurnState: .waiting, agentTurnID: "answer")
+        let continuations = [
+            """
+            {"type":"user","uuid":"next","message":{"role":"user","content":"continue"}}
+            """,
+            """
+            {"type":"assistant","uuid":"next","message":{"role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","name":"Bash","id":"tool"}]}}
+            """,
+        ]
+        for continuation in continuations {
+            let working = TranscriptDocument.summary(
+                ofTail: Data(continuation.utf8), provider: .claude, startingFrom: waiting)
+            XCTAssertEqual(working.agentTurnState, .working)
+            XCTAssertEqual(working.agentTurnID, "next")
+            let answer = Data("""
+            {"type":"assistant","uuid":"next-answer","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Done again."}]}}
+            """.utf8)
+            let completed = TranscriptDocument.summary(
+                ofTail: answer, provider: .claude, startingFrom: working)
+            XCTAssertEqual(completed.agentTurnState, .waiting)
+            XCTAssertEqual(completed.agentTurnID, "next-answer")
+        }
+    }
+
     func testClaudeSummaryTracksAskUserQuestionUntilItsMatchingResult() {
         let contradictoryTail = Data("""
         {"type":"user","uuid":"real-user","message":{"role":"user","content":"go"}}
@@ -569,6 +652,9 @@ final class DetachStateTests: XCTestCase {
         {"type":"assistant","uuid":"ask-record","message":{"role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","name":"AskUserQuestion","id":"ask-1"}]}}
         {"type":"user","uuid":"unrelated-result","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"bash-1"}]}}
         {"type":"user","uuid":"plain-user","message":{"role":"user","content":"this must not clear a pending tool result"}}
+        {"type":"assistant","uuid":"final-text","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Choose an option."}]}}
+        {"type":"system","subtype":"turn_duration","uuid":"duration"}
+        {"type":"assistant","uuid":"other-tool","message":{"role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","name":"Bash","id":"bash-2"}]}}
         """.utf8)
 
         XCTAssertEqual(

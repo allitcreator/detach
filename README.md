@@ -220,8 +220,9 @@ A compact guide below the session list keeps `Cmd-N`, `Cmd-T`, `Cmd-,`, and
 
 Sessions that wait for your reply move into **Answer ready**, before agents
 that are still working. Detach reads structured provider lifecycle records for
-this signal. It does not guess from terminal text. Mid-turn permission prompts
-are not currently part of the signal.
+this signal. A completed Claude text answer enters **Answer ready** even when
+Claude omits its turn-duration record. Detach does not guess from terminal
+text. Mid-turn permission prompts are not currently part of the signal.
 
 The optional menu bar companion shows:
 
