@@ -647,6 +647,69 @@ final class SessionStoreTests: XCTestCase {
         XCTAssertNil(result.message)
     }
 
+    func testStartDetachedMatchesRuntimeCanonicalGitRootFromNestedDirectory() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("detach-project-\(UUID().uuidString)", isDirectory: true)
+        let nested = root.appendingPathComponent("Sources/Nested", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: root.appendingPathComponent(".git", isDirectory: true),
+            withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+            at: nested,
+            withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let cli = FakeCLI()
+        cli.responses["list --json"] = ok(line.replacingOccurrences(
+            of: "/tmp/p",
+            with: root.path))
+        let store = SessionStore(cli: cli)
+
+        let result = await store.startDetached(
+            provider: .codex,
+            projectDirectory: nested,
+            name: nil,
+            prompt: nil)
+
+        XCTAssertEqual(result.sessionID, "detach-codex-p-1")
+        XCTAssertNil(result.message)
+        XCTAssertEqual(cli.calls, [["codex", "--detach"], ["list", "--json"]])
+    }
+
+    func testStartDetachedUsesNearestGitFileMarkerForAWorktree() async throws {
+        let outer = FileManager.default.temporaryDirectory
+            .appendingPathComponent("detach-outer-\(UUID().uuidString)", isDirectory: true)
+        let worktree = outer.appendingPathComponent("Worktrees/feature", isDirectory: true)
+        let nested = worktree.appendingPathComponent("Sources/Nested", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: outer.appendingPathComponent(".git", isDirectory: true),
+            withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+            at: nested,
+            withIntermediateDirectories: true)
+        try "gitdir: /tmp/detach-test-worktree\n".write(
+            to: worktree.appendingPathComponent(".git"),
+            atomically: true,
+            encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: outer) }
+
+        let cli = FakeCLI()
+        cli.responses["list --json"] = ok(line.replacingOccurrences(
+            of: "/tmp/p",
+            with: worktree.path))
+        let store = SessionStore(cli: cli)
+
+        let result = await store.startDetached(
+            provider: .codex,
+            projectDirectory: nested,
+            name: nil,
+            prompt: nil)
+
+        XCTAssertEqual(result.sessionID, "detach-codex-p-1")
+        XCTAssertNil(result.message)
+        XCTAssertEqual(cli.calls, [["codex", "--detach"], ["list", "--json"]])
+    }
+
     func testPrepareResumeStartsDetachedThenRefreshes() async throws {
         let cli = FakeCLI()
         let stopped = line.replacingOccurrences(

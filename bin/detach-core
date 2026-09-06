@@ -104,6 +104,8 @@ CONFIG_TMUX_MOUSE="$(config_value TMUX_MOUSE 2>/dev/null || true)"
 case "$CONFIG_TMUX_MOUSE" in 0|1|'') ;; *) CONFIG_TMUX_MOUSE="" ;; esac
 CONFIG_TMUX_EXTENDED_KEYS="$(config_value TMUX_EXTENDED_KEYS 2>/dev/null || true)"
 case "$CONFIG_TMUX_EXTENDED_KEYS" in 0|1|'') ;; *) CONFIG_TMUX_EXTENDED_KEYS="" ;; esac
+CONFIG_PARALLEL_PROVIDERS="$(config_value PARALLEL_PROVIDERS 2>/dev/null || true)"
+case "$CONFIG_PARALLEL_PROVIDERS" in 0|1|'') ;; *) CONFIG_PARALLEL_PROVIDERS="" ;; esac
 CODEX_STATE_ROOT="${DETACH_CODEX_STATE_ROOT:-$STATE_BASE_ROOT/codex}"
 CLAUDE_STATE_ROOT="${DETACH_CLAUDE_STATE_ROOT:-$STATE_BASE_ROOT/claude}"
 CODEX_SESSIONS_ROOT="$CODEX_STATE_ROOT/sessions"
@@ -136,6 +138,11 @@ TMUX_EXTENDED_KEYS_ENABLED="${DETACH_TMUX_EXTENDED_KEYS:-${CONFIG_TMUX_EXTENDED_
 case "$TMUX_EXTENDED_KEYS_ENABLED" in
   0|1) ;;
   *) die "DETACH_TMUX_EXTENDED_KEYS must be 0 or 1" ;;
+esac
+PARALLEL_PROVIDERS_ENABLED="${DETACH_PARALLEL_PROVIDERS:-${CONFIG_PARALLEL_PROVIDERS:-0}}"
+case "$PARALLEL_PROVIDERS_ENABLED" in
+  0|1) ;;
+  *) die "DETACH_PARALLEL_PROVIDERS must be 0 or 1" ;;
 esac
 DEFAULT_TMUX_SOCKET_PATH="$INSTALL_STATE_ROOT/tmux/tmux.sock"
 TMUX_SOCKET_PATH="${DETACH_TMUX_SOCKET_PATH:-$DEFAULT_TMUX_SOCKET_PATH}"
@@ -177,6 +184,7 @@ usage() {
     "  $PROGRAM config tmux-style [detach|inherit]" \
     "  $PROGRAM config tmux-mouse [on|off]" \
     "  $PROGRAM config tmux-extended-keys [on|off]" \
+    "  $PROGRAM config parallel-providers [on|off]" \
     "  $PROGRAM status [NAME]" \
     "  $PROGRAM logs [--ansi] [NAME]" \
     "  $PROGRAM stop [NAME]" \
@@ -1711,7 +1719,10 @@ write_config_key_locked() {
   local line
   local found=0
 
-  case "$key" in TMUX_STYLE|TMUX_MOUSE|TMUX_EXTENDED_KEYS) ;; *) die "invalid internal config key" ;; esac
+  case "$key" in
+    TMUX_STYLE|TMUX_MOUSE|TMUX_EXTENDED_KEYS|PARALLEL_PROVIDERS) ;;
+    *) die "invalid internal config key" ;;
+  esac
   case "$value" in 0|1) ;; *) die "invalid internal config value" ;; esac
   ensure_config_root
   if [ -e "$CONFIG_FILE" ] || [ -L "$CONFIG_FILE" ]; then
@@ -1839,6 +1850,25 @@ config_tmux_extended_keys() {
     *) die "tmux extended keys must be 'on' or 'off'" ;;
   esac
   write_config_key_under_lock TMUX_EXTENDED_KEYS "$value" "tmux extended keys"
+}
+
+config_parallel_providers() {
+  local requested="${1:-}"
+  local value
+
+  if [ "$#" -eq 0 ]; then
+    if [ "$PARALLEL_PROVIDERS_ENABLED" = "1" ]; then printf 'on\n'; else printf 'off\n'; fi
+    return 0
+  fi
+  [ "$#" -eq 1 ] || die "config parallel-providers accepts at most one value"
+  [ "${DETACH_PARALLEL_PROVIDERS+x}" != "x" ] || \
+    die "cannot change parallel providers while DETACH_PARALLEL_PROVIDERS overrides the config"
+  case "$requested" in
+    on) value=1 ;;
+    off) value=0 ;;
+    *) die "parallel providers must be 'on' or 'off'" ;;
+  esac
+  write_config_key_under_lock PARALLEL_PROVIDERS "$value" "parallel providers"
 }
 
 attach_session() {
@@ -6149,11 +6179,23 @@ running_session_for_project() {
   local cwd="$1"
   local excluded_session="${2:-}"
   local candidate
+  local candidate_provider
 
   while IFS= read -r candidate; do
     [ -n "$candidate" ] || continue
     [ "$candidate" = "$excluded_session" ] && continue
     tmux_is_any_managed "$candidate" || continue
+    if [ "$PARALLEL_PROVIDERS_ENABLED" = "1" ]; then
+      # Opt-in collaboration permits one session from each provider in the
+      # same canonical repository. Only a well-formed tag for the other known
+      # provider is exempt; missing or foreign identity still fails closed.
+      candidate_provider="$(tmux_option "$candidate" '@detach_provider')"
+      case "$candidate_provider" in
+        "$PROVIDER") ;;
+        codex|claude) continue ;;
+        *) ;;
+      esac
+    fi
     tmux_session_running "$candidate" || continue
     [ "$(tmux_option "$candidate" '@detach_cwd')" = "$cwd" ] || continue
     printf '%s\n' "$candidate"
@@ -8086,6 +8128,10 @@ main() {
       tmux-extended-keys)
         shift
         config_tmux_extended_keys "$@"
+        ;;
+      parallel-providers)
+        shift
+        config_parallel_providers "$@"
         ;;
       *) die "unknown config key: ${1:-missing}" ;;
     esac

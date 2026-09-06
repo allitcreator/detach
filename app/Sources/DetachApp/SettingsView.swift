@@ -173,7 +173,7 @@ private extension SettingsDestination {
     /// the selected tab like classic AppKit preference panes.
     var baseHeight: CGFloat {
         switch self {
-        case .general: 620
+        case .general: 680
         case .terminal: 460
         case .notifications: 350
         case .system: 780
@@ -229,6 +229,7 @@ struct SettingsView: View {
     @State private var isUpdatingTmuxStyle = false
     @State private var tmuxStyleError: String?
     @StateObject private var extendedKeys = TmuxExtendedKeysSettingsController()
+    @StateObject private var parallelProviders = ParallelProvidersSettingsController()
     @State private var fontSizeDraft: AppFontSizeDraft?
     @State private var selectedStorageSessionIDs = Set<String>()
     @State private var pendingStorageCleanup: [StorageSession] = []
@@ -336,6 +337,7 @@ struct SettingsView: View {
                 executable: URL(fileURLWithPath: activeDetachPath)))
             await loadTmuxStyle()
             await extendedKeys.load(detachPath: activeDetachPath)
+            await parallelProviders.load(detachPath: activeDetachPath)
         }
         .task(id: navigation.selectedTab) {
 // quality-coverage:begin system-heartbeat
@@ -374,6 +376,9 @@ struct SettingsView: View {
                 await installation.refreshContext()
                 if !isUpdatingTmuxStyle {
                     await loadTmuxStyle()
+                }
+                if !parallelProviders.isUpdating {
+                    await parallelProviders.load(detachPath: activeDetachPath)
                 }
                 if navigation.selectedTab == .system {
                     await storageStore.refresh()
@@ -562,6 +567,48 @@ struct SettingsView: View {
                 Text(L10n.string(
                     "⌘N opens New session. ⌘T starts Quick chat immediately."))
                     .settingsMessage()
+            }
+            Section(L10n.string("Agent collaboration")) {
+                Toggle(
+                    L10n.string("Allow Claude and Codex in the same project"),
+                    isOn: Binding(
+                        get: { parallelProviders.isEnabled },
+                        set: { newValue in
+                            Task {
+                                await parallelProviders.save(
+                                    newValue ? .on : .off,
+                                    detachPath: activeDetachPath)
+                            }
+                        }))
+                    .disabled(
+                        parallelProviders.setting == nil
+                            || parallelProviders.isUpdating)
+                    .accessibilityIdentifier("settings-parallel-providers")
+
+                if parallelProviders.isUpdating && parallelProviders.setting == nil {
+                    HStack(spacing: 7) {
+                        ProgressView().controlSize(.small)
+                        Text(L10n.string("Reading the setting from detach…"))
+                    }
+                    .settingsMessage()
+                } else {
+                    Text(L10n.string(
+                        "Allows one Claude Code and one Codex session to run in the same project. Nested folders share their nearest Git root; outside Git, Detach matches the exact working folder. The agents can edit the same files at the same time, so coordinate their work carefully."))
+                        .settingsMessage()
+                }
+
+                if let parallelProvidersError = parallelProviders.errorMessage {
+                    HStack(alignment: .firstTextBaseline, spacing: 10) {
+                        Text(parallelProvidersError).settingsMessage(color: .red)
+                        Spacer(minLength: 8)
+                        Button(L10n.string("Try again")) {
+                            Task {
+                                await parallelProviders.load(detachPath: activeDetachPath)
+                            }
+                        }
+                        .disabled(parallelProviders.isUpdating)
+                    }
+                }
             }
             Section(L10n.string("Menu Bar")) {
                 Toggle(

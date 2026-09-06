@@ -692,9 +692,34 @@ public final class SessionStore {
     }
 
     private static func canonicalProjectPath(_ path: String) -> String {
-        URL(fileURLWithPath: path, isDirectory: true)
+        let resolved = URL(fileURLWithPath: path, isDirectory: true)
             .resolvingSymlinksInPath()
-            .standardizedFileURL.path
+            .standardizedFileURL
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(
+            atPath: resolved.path,
+            isDirectory: &isDirectory),
+              isDirectory.boolValue else {
+            return resolved.path
+        }
+
+        var candidate = resolved
+        while true {
+            let marker = candidate.appendingPathComponent(".git")
+            if let values = try? marker.resourceValues(forKeys: [
+                .isDirectoryKey,
+                .isRegularFileKey,
+                .isSymbolicLinkKey,
+            ]),
+               values.isSymbolicLink != true,
+               values.isDirectory == true || values.isRegularFile == true {
+                return candidate.path
+            }
+            let parent = candidate.deletingLastPathComponent()
+            guard parent.path != candidate.path else { break }
+            candidate = parent
+        }
+        return resolved.path
     }
 
     /// Deletes every selected finished session and reports failures without

@@ -50,6 +50,8 @@
 "Try again" = "Повторить";
 "Couldn't read the tmux setting: %@" = "Не удалось прочитать настройку tmux: %@";
 "Couldn't save the tmux setting: %@" = "Не удалось сохранить настройку tmux: %@";
+"Couldn't read the parallel agents setting: %@" = "Не удалось прочитать настройку параллельных агентов: %@";
+"Couldn't save the parallel agents setting: %@" = "Не удалось сохранить настройку параллельных агентов: %@";
 
 /* App and shared UI */
 "%@ build %@" = "%@ (сборка %@)";
@@ -61,10 +63,13 @@
 "<empty>" = "<пусто>";
 "Add %@ to PATH" = "Добавьте %@ в PATH";
 "Agent response is ready" = "Ответ агента готов";
+"Agent collaboration" = "Совместная работа агентов";
 "Advanced" = "Дополнительно";
 "All detach sessions from both providers are on the left" = "Слева — все detach-сессии обоих провайдеров";
 "All interactive actions will open in %@." = "Все интерактивные действия будут открываться в %@.";
 "Allow notifications" = "Разрешить уведомления";
+"Allow Claude and Codex in the same project" = "Разрешить Claude и Codex работать в одном проекте";
+"Allows one Claude Code and one Codex session to run in the same project. Nested folders share their nearest Git root; outside Git, Detach matches the exact working folder. The agents can edit the same files at the same time, so coordinate their work carefully." = "Разрешает одновременно запустить одну сессию Claude Code и одну сессию Codex в одном проекте. Вложенные каталоги относятся к ближайшему корню Git, а вне Git Detach сравнивает точный рабочий каталог. Агенты могут одновременно менять одни и те же файлы, поэтому координируйте их работу.";
 "App and CLI Version" = "Версия приложения и CLI";
 "Application Location" = "Расположение приложения";
 "Automatic updates are unavailable" = "Автообновления недоступны";
@@ -216,6 +221,7 @@
 "detach config timed out" = "Истекло время ожидания detach config";
 "detach is unavailable" = "detach недоступен";
 "detach returned an unsupported tmux style: %@" = "detach вернул неподдерживаемый стиль tmux: %@";
+"detach returned an unsupported parallel-providers setting: %@" = "detach вернул неподдерживаемую настройку parallel-providers: %@";
 "exit %d" = "код выхода %d";
 "lockf" = "lockf";
 "macOS did not finish registering the watchdog." = "macOS не завершила регистрацию фоновой службы.";

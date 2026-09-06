@@ -55,6 +55,12 @@ worst hold.
 
 `start` takes a cross-provider project lock, creates a safe identifier, sets
 window `remain-on-exit` off and the provider pane on, then launches `__worker`.
+The lock always serializes lifecycle transitions. Project occupancy defaults
+to one live managed writer across providers. The opt-in `parallel-providers`
+setting permits one known Codex and one known Claude session in the same
+canonical project. A project is the nearest real Git root, or the exact working
+directory outside Git. A second session from either provider and a missing or
+unknown provider identity still fail closed.
 Splits close on exit; logs and status remain. The first unnamed history is
 `detach-<provider>-<project-slug>-<project-hash>`; successors add a monotonic
 `-r<12-hex>` and store the base as `default_session_base`. Explicit names are
@@ -81,11 +87,13 @@ The retained provider pane, metadata, and checkpoints remain available.
 Ctrl-C that leaves the provider running does not detach its clients.
 
 Default starts form a provider/project history series. A fresh start refuses a
-live member or second writer; otherwise it allocates a successor without
-reusing saved state. No-`NAME` commands select the live member, then the highest
-suffix. Older `session_name` values stay addressable; their metadata, logs,
-and checkpoints remain until Delete or typed storage cleanup. Explicit names
-stay deterministic and obey the same project lock and cleanup policy.
+live member or conflicting writer; otherwise it allocates a successor without
+reusing saved state. With `parallel-providers` off, every live provider in the
+project conflicts. With it on, only the same provider conflicts. No-`NAME`
+commands select the live member, then the highest suffix. Older `session_name`
+values stay addressable; their metadata, logs, and checkpoints remain until
+Delete or typed storage cleanup. Explicit names stay deterministic and obey the
+same project lock and cleanup policy.
 
 The worker starts checkpoint and power-status loops, then runs the provider only
 through:

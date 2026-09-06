@@ -50,6 +50,8 @@
 "Try again" = "Try again";
 "Couldn't read the tmux setting: %@" = "Couldn't read the tmux setting: %@";
 "Couldn't save the tmux setting: %@" = "Couldn't save the tmux setting: %@";
+"Couldn't read the parallel agents setting: %@" = "Couldn't read the parallel agents setting: %@";
+"Couldn't save the parallel agents setting: %@" = "Couldn't save the parallel agents setting: %@";
 
 /* App and shared UI */
 "%@ build %@" = "%@ build %@";
@@ -61,10 +63,13 @@
 "<empty>" = "<empty>";
 "Add %@ to PATH" = "Add %@ to PATH";
 "Agent response is ready" = "Agent response is ready";
+"Agent collaboration" = "Agent collaboration";
 "Advanced" = "Advanced";
 "All detach sessions from both providers are on the left" = "All detach sessions from both providers are on the left";
 "All interactive actions will open in %@." = "All interactive actions will open in %@.";
 "Allow notifications" = "Allow notifications";
+"Allow Claude and Codex in the same project" = "Allow Claude and Codex in the same project";
+"Allows one Claude Code and one Codex session to run in the same project. Nested folders share their nearest Git root; outside Git, Detach matches the exact working folder. The agents can edit the same files at the same time, so coordinate their work carefully." = "Allows one Claude Code and one Codex session to run in the same project. Nested folders share their nearest Git root; outside Git, Detach matches the exact working folder. The agents can edit the same files at the same time, so coordinate their work carefully.";
 "App and CLI Version" = "App and CLI Version";
 "Application Location" = "Application Location";
 "Automatic updates are unavailable" = "Automatic updates are unavailable";
@@ -216,6 +221,7 @@
 "detach config timed out" = "detach config timed out";
 "detach is unavailable" = "detach is unavailable";
 "detach returned an unsupported tmux style: %@" = "detach returned an unsupported tmux style: %@";
+"detach returned an unsupported parallel-providers setting: %@" = "detach returned an unsupported parallel-providers setting: %@";
 "exit %d" = "exit %d";
 "lockf" = "lockf";
 "macOS did not finish registering the watchdog." = "macOS did not finish registering the watchdog.";

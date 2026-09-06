@@ -80,7 +80,13 @@ Command-N opens New session. Its chooser starts at the default project or the
 selection's parent. Command-T starts the chosen provider in a private 0700
 `detach-chat-<UUID>` below its folder (`/tmp` default). An event
 selects an unambiguous `starting` session before readiness, without polling.
-Invalid folders block launch.
+Invalid folders block launch. General settings expose the CLI-backed,
+default-off `parallel-providers` option. When enabled, one Claude Code and one
+Codex session may share a canonical project directory; the UI warns that their
+file edits are not isolated. Session matching resolves the same nearest real
+`.git` ancestor as the runtime, or the exact working directory outside Git, so
+a launch chosen from a nested repository directory selects the new session
+emitted for the repository root.
 Command-1 through Command-9 open main and select numbered Working or Answer
 ready sessions. Numbers appear in rows and stay stable across both sections.
 When a session leaves them, the earliest waiting session gets its number;

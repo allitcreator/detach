@@ -522,12 +522,95 @@ mkdir -p "$TMP_ROOT/unrelated-tmux-tmpdir"
 TMUX_TMPDIR="$TMP_ROOT/unrelated-tmux-tmpdir" \
   "$SCRIPT" list | grep -F 'claude' | grep -F "$session" | grep -F "$session_id" >/dev/null
 
-# Exercise cross-provider routing while the fake Claude worker is definitely
-# live; the later metadata and checkpoint assertions intentionally do more IO.
-if "$SCRIPT" codex --name cross-provider --detach -- 'must not run beside Claude'; then
-  printf 'Codex unexpectedly started beside a running Claude task\n' >&2
+# Exercise cross-provider project occupancy while the fake Claude worker is
+# definitely live. Safe mode remains the default, so Codex is rejected even
+# when it starts from a nested directory canonicalized to this repository.
+parallel_codex_name=parallel-provider
+parallel_codex_session=detach-codex-parallel-provider
+if (cd "$ROOT/app" && \
+    "$SCRIPT" codex --name "$parallel_codex_name" --detach -- \
+      'must not run beside Claude by default'); then
+  printf 'Codex unexpectedly started beside a running Claude task by default\n' >&2
   exit 1
 fi
+
+# The opt-in permits exactly the other provider in the same canonical project.
+# Startup remains serialized by the shared project/install locks; only the
+# long-running occupancy rule becomes provider-specific.
+parallel_codex_release="$TMP_ROOT/parallel-codex-release"
+claude_power_args_snapshot="$TMP_ROOT/claude-power-args-before-parallel.txt"
+cp "$FAKE_POWER_ARGS_FILE" "$claude_power_args_snapshot"
+export FAKE_CODEX_RELEASE_FILE="$parallel_codex_release"
+export FAKE_CODEX_EXIT=0
+"$SCRIPT" config parallel-providers on
+[ "$("$SCRIPT" config parallel-providers)" = on ]
+
+# A managed-looking session with missing or unknown provider identity remains
+# a conservative conflict instead of becoming an opt-in bypass.
+unknown_provider_session=detach-unknown-provider
+unknown_provider_pane="$(tmux -L "$SOCKET" new-session -d -P -F '#{pane_id}' \
+  -s "$unknown_provider_session" -n unknown)"
+tmux -L "$SOCKET" set-option -q -t "=$unknown_provider_session:" @detach 1
+tmux -L "$SOCKET" set-option -q -t "=$unknown_provider_session:" \
+  @detach_provider unknown
+tmux -L "$SOCKET" set-option -q -t "=$unknown_provider_session:" \
+  @detach_cwd "$ROOT"
+tmux -L "$SOCKET" set-option -q -t "=$unknown_provider_session:" \
+  @detach_pane_id "$unknown_provider_pane"
+if (cd "$ROOT/app" && \
+    "$SCRIPT" codex --name malformed-provider-bypass --detach -- \
+      'must fail closed'); then
+  printf 'Codex unexpectedly bypassed an unknown managed provider identity\n' >&2
+  exit 1
+fi
+tmux -L "$SOCKET" set-option -qu -t "=$unknown_provider_session:" \
+  @detach_provider
+if (cd "$ROOT/app" && \
+    "$SCRIPT" codex --name missing-provider-bypass --detach -- \
+      'must also fail closed'); then
+  printf 'Codex unexpectedly bypassed a missing managed provider identity\n' >&2
+  exit 1
+fi
+tmux -L "$SOCKET" kill-session -t "=$unknown_provider_session"
+
+(cd "$ROOT/app" && \
+  "$SCRIPT" codex --name "$parallel_codex_name" --detach -- \
+    'coordinate with Claude')
+wait_for_tmux_option "$parallel_codex_session" @detach_status running
+[ "$(tmux -L "$SOCKET" show-options -qv \
+  -t "=$parallel_codex_session:" @detach_provider)" = codex ]
+[ "$(tmux -L "$SOCKET" show-options -qv \
+  -t "=$parallel_codex_session:" @detach_cwd)" = "$ROOT" ]
+parallel_list="$("$SCRIPT" list --json)"
+printf '%s\n' "$parallel_list" | grep -F "\"session_name\":\"$human_session\"" >/dev/null
+printf '%s\n' "$parallel_list" | \
+  grep -F "\"session_name\":\"$parallel_codex_session\"" >/dev/null
+[ "$(tmux -L "$SOCKET" display-message -p \
+  -t "=$parallel_codex_session:" '#{pane_dead}')" = 0 ]
+[ "$(tmux -L "$SOCKET" display-message -p \
+  -t "=$human_session:" '#{pane_dead}')" = 0 ]
+
+# Enabling collaboration never permits a second session from the same
+# provider, including another launch from a nested directory.
+if (cd "$ROOT/app" && \
+    "$SCRIPT" claude --name second-claude --detach -- \
+      'must not run beside the existing Claude'); then
+  printf 'a second Claude unexpectedly started in one project\n' >&2
+  exit 1
+fi
+if (cd "$ROOT/app" && \
+    "$SCRIPT" codex --name second-codex --detach -- \
+      'must not run beside the existing Codex'); then
+  printf 'a second Codex unexpectedly started in one project\n' >&2
+  exit 1
+fi
+"$SCRIPT" codex stop "$parallel_codex_name"
+"$SCRIPT" codex delete --force "$parallel_codex_name"
+cp "$claude_power_args_snapshot" "$FAKE_POWER_ARGS_FILE"
+unset FAKE_CODEX_RELEASE_FILE FAKE_CODEX_EXIT
+"$SCRIPT" config parallel-providers off
+[ "$("$SCRIPT" config parallel-providers)" = off ]
+
 "$STATE_HELPER" meta matches "$meta" claude "$session_id"
 test_sqlite "$CODEX_HOME/state_5.sqlite" \
   'CREATE TABLE IF NOT EXISTS threads (id TEXT PRIMARY KEY, rollout_path TEXT NOT NULL, created_at_ms INTEGER, updated_at_ms INTEGER, source TEXT, thread_source TEXT, cwd TEXT);'

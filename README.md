@@ -142,9 +142,10 @@ Settings → General selects the provider and parent folder for Quick chat. The
 default is `/tmp`. Each `Cmd-T` creates a private
 `detach-chat-<uuid>` project inside that folder, so another Quick chat can
 start while earlier chats are still running. The same settings page selects
-the default folder for the standard project chooser. Quick chat uses the
-normal managed session lifecycle. Detach does not automatically delete its
-project files, state, or provider transcripts.
+the default folder for the standard project chooser. It also has an opt-in
+agent collaboration setting described below. Quick chat uses the normal
+managed session lifecycle. Detach does not automatically delete its project
+files, state, or provider transcripts.
 
 Detach shows each assigned session shortcut beside its name. The number stays
 with the session while it is in Working or Answer ready. Detach reuses the
@@ -248,9 +249,12 @@ These actions solve different problems:
 managed run.**
 
 Recovery validates identity, paths, and provider data before it writes. It
-never rolls repository files back. A shared project lock also prevents two
-Detach-managed agents, including agents from different providers, from writing
-the same worktree at the same time.
+never rolls repository files back. By default, a shared project lock prevents
+two Detach-managed agents from writing the same worktree at the same time.
+Settings → General can opt into one live Codex and one live Claude Code session
+per project. Nested directories share their nearest Git root; outside Git, only
+the exact working directory is shared. Starts remain serialized, but later file
+edits do not: coordinate the agents and review overlapping changes carefully.
 
 ## Reliability that distinguishes slow from broken
 
@@ -510,6 +514,7 @@ detach reconcile --dry-run --json
 | `detach config tmux-style [detach\|inherit]` | Use the Detach identity bar or your tmux theme. |
 | `detach config tmux-mouse [on\|off]` | Toggle managed scrolling, selection, and copy-mode type-through. |
 | `detach config tmux-extended-keys [on\|off]` | Toggle Shift+Return multiline input in managed sessions. |
+| `detach config parallel-providers [on\|off]` | Opt into one Codex and one Claude Code session in the same project. |
 | `detach doctor [--json]` | Verify the app-installed runtime, provider CLIs, helper, and monitor. |
 | `detach repair` | Reinstall the pristine immutable CLI payload from Detach.app. |
 | `detach uninstall [--keep-state\|--purge-state]` | Remove Detach components and choose whether checkpoints stay. |

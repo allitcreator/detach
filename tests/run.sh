@@ -942,6 +942,26 @@ if DETACH_TMUX_STYLE=0 "$SCRIPT" config tmux-style detach >/dev/null 2>&1; then
   exit 1
 fi
 
+# Cross-provider collaboration is an explicit opt-in. The shared config
+# round-trips without disturbing older keys, and an environment override owns
+# the effective value without being persisted.
+[ "$("$SCRIPT" config parallel-providers)" = "off" ]
+"$SCRIPT" config parallel-providers on
+[ "$("$SCRIPT" config parallel-providers)" = "on" ]
+grep -Fx CUSTOM_SETTING=kept "$DETACH_CONFIG_ROOT/config" >/dev/null
+if "$SCRIPT" config parallel-providers always >/dev/null 2>&1; then
+  printf 'config unexpectedly accepted an unsupported parallel-providers value\n' >&2
+  exit 1
+fi
+[ "$(DETACH_PARALLEL_PROVIDERS=0 "$SCRIPT" config parallel-providers)" = "off" ]
+if DETACH_PARALLEL_PROVIDERS=0 \
+     "$SCRIPT" config parallel-providers on >/dev/null 2>&1; then
+  printf 'config unexpectedly changed a value owned by DETACH_PARALLEL_PROVIDERS\n' >&2
+  exit 1
+fi
+"$SCRIPT" config parallel-providers off
+[ "$("$SCRIPT" config parallel-providers)" = "off" ]
+
 # Pre-feature managed sessions have no styling ownership marker and must not
 # be modified when the shared setting changes.
 legacy_session="detach-codex-legacy-style"
