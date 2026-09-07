@@ -260,9 +260,12 @@ A compact guide below the session list keeps `Cmd-N`, `Cmd-T`, `Cmd-,`, and
 `Cmd-F` visible without opening a help screen.
 
 Finished turns move into **Answer ready**, before agents that are still
-working. This is separate from the pet's narrower **Needs input** state, which
-requires a structured provider input request. Detach does not infer this state
-from assistant prose or terminal contents.
+working. A completed Claude text answer enters **Answer ready** even when Claude
+omits its turn-duration record. This is separate from the pet's narrower
+**Needs input** state, which requires a structured provider input request.
+Detach derives both states from structured provider records, not terminal
+contents. Ordinary assistant prose and mid-turn permission prompts do not
+produce **Needs input**.
 
 The optional menu bar companion shows:
 

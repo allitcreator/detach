@@ -1026,7 +1026,7 @@ final class DetachStateCommandTests: XCTestCase {
         let migratedReceipt = try XCTUnwrap(
             JSONSerialization.jsonObject(with: Data(contentsOf: receipt))
                 as? [String: Any])
-        XCTAssertEqual(migratedReceipt["schema"] as? Int, 4)
+        XCTAssertEqual(migratedReceipt["schema"] as? Int, 5)
 
         let unrelatedToolResult = Data("""
 
@@ -1079,6 +1079,98 @@ final class DetachStateCommandTests: XCTestCase {
             separator: 0, omittingEmptySubsequences: false
         ).dropLast().map { String(decoding: $0, as: UTF8.self) }
         XCTAssertEqual(Array(workingValues[28..<30]), ["working", "answer-user"])
+    }
+
+    func testMetaSnapshotsReclassifySchemaFourCodexInputRequest() throws {
+        let root = temporaryDirectory.appendingPathComponent("codex-input-sessions")
+        let session = root.appendingPathComponent("detach-codex-input")
+        try FileManager.default.createDirectory(at: session, withIntermediateDirectories: true)
+        let transcript = temporaryDirectory.appendingPathComponent("codex-input.jsonl")
+        try Data("""
+        {"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"}}
+        {"type":"event_msg","payload":{"type":"item_started","turn_id":"turn-1","item":{"type":"request_user_input"}}}
+
+        """.utf8).write(to: transcript)
+        try JSONSerialization.data(withJSONObject: [
+            "schema": 1, "session_name": "detach-codex-input",
+            "project_dir": "/tmp/project", "status": "running",
+            "transcript_path": transcript.path,
+        ]).write(to: session.appendingPathComponent("meta.json"))
+
+        func turnFields() throws -> [String] {
+            let output = try DetachStateCommand.run(arguments: [
+                "meta", "snapshots", root.path, "--with-transcript-summary",
+            ])
+            let values = output.split(separator: 0, omittingEmptySubsequences: false)
+                .dropLast().map { String(decoding: $0, as: UTF8.self) }
+            return Array(values[28..<30])
+        }
+        XCTAssertEqual(try turnFields(), ["needs_input", "turn-1"])
+        let receipt = session.appendingPathComponent(".transcript-summary-cache.json")
+        var legacy = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: receipt)) as? [String: Any])
+        // The schema-4 main helper ignored this structured input request and
+        // cached the preceding task_started record for the same file identity.
+        legacy["schema"] = 4
+        legacy["agentTurnState"] = "working"
+        legacy["agentTurnID"] = "turn-1"
+        legacy.removeValue(forKey: "pendingToolUseID")
+        try JSONSerialization.data(withJSONObject: legacy).write(to: receipt)
+
+        XCTAssertEqual(try turnFields(), ["needs_input", "turn-1"])
+        let updated = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: receipt)) as? [String: Any])
+        XCTAssertEqual(updated["schema"] as? Int, 5)
+    }
+
+    func testMetaSnapshotsReclassifyCachedClaudeEndTurnWithoutTranscriptChange() throws {
+        let root = temporaryDirectory.appendingPathComponent("completed-sessions")
+        let session = root.appendingPathComponent("detach-claude-completed")
+        try FileManager.default.createDirectory(at: session, withIntermediateDirectories: true)
+        let transcript = temporaryDirectory.appendingPathComponent("completed.jsonl")
+        try Data("""
+        {"type":"user","uuid":"request","message":{"role":"user","content":"go"}}
+        {"type":"assistant","uuid":"answer","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Done."}]}}
+
+        """.utf8).write(to: transcript)
+        try JSONSerialization.data(withJSONObject: [
+            "schema": 1, "session_name": "detach-claude-completed",
+            "project_dir": "/tmp/project", "status": "running",
+            "transcript_path": transcript.path,
+        ]).write(to: session.appendingPathComponent("meta.json"))
+
+        func turnFields() throws -> [String] {
+            let output = try DetachStateCommand.run(arguments: [
+                "meta", "snapshots", root.path, "--with-transcript-summary",
+            ])
+            let values = output.split(separator: 0, omittingEmptySubsequences: false)
+                .dropLast().map { String(decoding: $0, as: UTF8.self) }
+            return Array(values[28..<30])
+        }
+        XCTAssertEqual(try turnFields(), ["waiting", "answer"])
+        let receipt = session.appendingPathComponent(".transcript-summary-cache.json")
+        var legacy = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: receipt)) as? [String: Any])
+        // Keep the exact transcript identity, as an installed schema-3 helper
+        // does when it ignores end_turn and caches the preceding request.
+        legacy["schema"] = 3
+        legacy["agentTurnState"] = "working"
+        legacy["agentTurnID"] = "request"
+        try JSONSerialization.data(withJSONObject: legacy).write(to: receipt)
+
+        XCTAssertEqual(try turnFields(), ["waiting", "answer"])
+        XCTAssertEqual(try turnFields(), ["waiting", "answer"])
+        let updated = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: receipt)) as? [String: Any])
+        XCTAssertEqual(updated["schema"] as? Int, 5)
+
+        let handle = try FileHandle(forWritingTo: transcript)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data("""
+        {"type":"system","subtype":"turn_duration","uuid":"duration"}
+        """.utf8))
+        try handle.close()
+        XCTAssertEqual(try turnFields(), ["waiting", "answer"])
     }
 
     func testMetaSnapshotsFailClosedForNonFileTranscripts() throws {
