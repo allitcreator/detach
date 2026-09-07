@@ -1016,7 +1016,7 @@ final class SessionAttachTerminalTests: XCTestCase {
             pasteboard.clearContents()
             pasteboard.writeObjects(savedItems)
         }
-        let terminal = SessionAttachLocalProcessTerminalView(
+        let terminal = MouseRecordingTerminalView(
             frame: NSRect(x: 0, y: 0, width: 640, height: 360))
         let coordinator = SessionAttachTerminalView.Coordinator(
             controller: SessionAttachController(invocation: Self.invocation()),
@@ -1049,6 +1049,25 @@ final class SessionAttachTerminalTests: XCTestCase {
         XCTAssertTrue(selected.contains("output"))
         copy()
         XCTAssertEqual(pasteboard.string(forType: .string), selected)
+
+        let commandV = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: .command,
+            timestamp: 0, windowNumber: 0, context: nil,
+            characters: "м", charactersIgnoringModifiers: "м",
+            isARepeat: false, keyCode: 9))
+        let text = "Привет, мир! Ёж 🦔\n第二行"
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+        terminal.feed(text: "\u{1B}[?2004h")
+        for enhancement in ["", "\u{1B}[>1u"] {
+            terminal.feed(text: enhancement)
+            terminal.sent.removeAll()
+            XCTAssertNil(coordinator.routeKeyboardEvent(
+                commandV, window: nil, firstResponder: terminal, in: terminal,
+                send: { _ in XCTFail("Command-V must use native paste") }))
+            XCTAssertEqual(terminal.sent,
+                Array(("\u{1B}[200~" + text + "\u{1B}[201~").utf8))
+        }
     }
 
     @MainActor

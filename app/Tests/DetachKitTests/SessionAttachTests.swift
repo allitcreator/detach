@@ -52,6 +52,26 @@ final class SessionAttachTests: XCTestCase {
             ])
     }
 
+    func testAttachClientAlwaysUsesUTF8DespiteInheritedCLocale() {
+        for base in [
+            ["LANG": "C"],
+            ["LANG": "ru_RU.UTF-8", "LC_ALL": "C"],
+            ["LANG": "ru_RU.UTF-8", "LC_CTYPE": "C", "LC_ALL": ""],
+        ] {
+            XCTAssertTrue(SessionAttachInvocation.environment(from: base)
+                .contains("LC_ALL=en_US.UTF-8"))
+        }
+        for base in [
+            ["LANG": "C", "LC_ALL": "ru_RU.UTF-8"],
+            ["LANG": "C", "LC_CTYPE": "en_US.utf8"],
+        ] {
+            let environment = SessionAttachInvocation.environment(from: base)
+            for (key, value) in base {
+                XCTAssertTrue(environment.contains("\(key)=\(value)"))
+            }
+        }
+    }
+
     func testClientSwitchBindsExactPIDSourceAndTargetProvider() {
         XCTAssertEqual(
             SessionClientSwitchInvocation.arguments(

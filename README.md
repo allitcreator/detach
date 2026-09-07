@@ -143,6 +143,8 @@ The embedded terminal keeps the shortcuts that matter:
 With managed mouse input, tmux copies the selection when you release the
 mouse button. `Cmd-C` keeps that copy when there is no native selection.
 Links show an underline on hover. Click an underlined link to open it.
+Copies preserve Unicode text. `Cmd-V` leaves managed copy mode and inserts
+the text at the live prompt, including line breaks.
 
 Settings → General selects the provider and parent folder for Quick chat. The
 default is `/tmp`. Each `Cmd-T` creates a private
@@ -581,7 +583,9 @@ Inside managed tmux, the mouse wheel scrolls one line at a time. Mouse selection
 copies to the macOS clipboard and keeps the highlight and scroll position. When
 managed mouse input is on, an ASCII or Cyrillic printable key, Space, Enter, or
 Backspace leaves copy mode and sends that key to the live prompt. Arrows, page
-navigation, Escape, and control chords keep their copy-mode behavior. Use
+navigation, Escape, and bound control chords keep their copy-mode behavior.
+Other unbound input, including bracketed paste, returns to the live prompt.
+Use
 `detach config tmux-mouse off` to restore the original copy-mode key tables and
 return mouse handling to the terminal emulator. In Terminal.app, Option-drag
 also bypasses tmux selection.

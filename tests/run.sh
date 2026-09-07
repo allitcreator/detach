@@ -1169,7 +1169,7 @@ tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" status-right | \
 # the macOS clipboard through the Detach-owned server's copy-command.
 [ "$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" mouse)" = "on" ]
 [ "$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach_copy_type_through)" = "1" ]
-[ "$(tmux -L "$SOCKET" show-options -sqv copy-command)" = "/usr/bin/pbcopy" ]
+[ "$(tmux -L "$SOCKET" show-options -sqv copy-command)" = "LC_ALL=en_US.UTF-8 /usr/bin/pbcopy" ]
 tmux -L "$SOCKET" list-keys -T copy-mode | grep -F 'WheelUpPane' | \
   grep -F 'scroll-up' >/dev/null
 # Selections copy through the clipboard but keep the highlight and stay in
@@ -1240,7 +1240,126 @@ tmux -L "$SOCKET" new-session -d -s "$shift_return_session" \
 # Re-run the server configuration through a real attach. Attaching without a
 # controlling terminal fails after tmux_configure_server has already run, so the
 # terminal-features must still appear exactly once.
+original_copy_keys="$(tmux -L "$SOCKET" list-keys -T detach-copy-mode-original)"
+tmux -L "$SOCKET" set-option -s @detach_copy_type_through_initialized 1
+tmux -L "$SOCKET" set-option -s copy-command /usr/bin/pbcopy
+tmux -L "$SOCKET" unbind-key -T copy-mode Any
+tmux -L "$SOCKET" unbind-key -T copy-mode-vi Any
 run_codex attach integration </dev/null >/dev/null 2>&1 || true
+[ "$(tmux -L "$SOCKET" show-options -sqv @detach_copy_type_through_initialized)" = 2 ]
+[ "$(tmux -L "$SOCKET" list-keys -T detach-copy-mode-original)" = "$original_copy_keys" ]
+python3 - "$TMUX_TEST_BIN" "$SOCKET_PATH" "$TMP_ROOT" <<'PY_TERMINAL_PASTE'
+#!/usr/bin/env python3
+"""Exercise managed tmux clipboard and paste through a real terminal client."""
+
+import os
+from pathlib import Path
+import pty
+import shlex
+import subprocess
+import sys
+import time
+
+
+def wait_for(predicate):
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(0.02)
+    raise AssertionError("terminal clipboard condition did not become true")
+
+
+def main():
+    tmux, socket, directory = sys.argv[1:]
+    root = Path(directory)
+    utf8 = dict(os.environ, LC_ALL="en_US.UTF-8", TERM="xterm-256color")
+
+    def tm(*args):
+        return subprocess.check_output([tmux, "-S", socket, *args], env=utf8)
+
+    def read_clipboard():
+        return subprocess.check_output(
+            ["/usr/bin/pbpaste", "-pboard", "find"], env=utf8)
+
+    saved = read_clipboard()
+    sample = "Привет, мир! Ёж 🦔 第二行".encode()
+    copy_command = tm("show-options", "-sqv", "copy-command").decode().strip()
+    reader = root / "paste-reader.py"
+    reader.write_text(
+        "import os,sys,tty\n"
+        "tty.setraw(0)\n"
+        "output=open(sys.argv[1],'wb',buffering=0)\n"
+        "os.write(1, bytes.fromhex(sys.argv[2]))\n"
+        "while True: output.write(os.read(0,4096))\n")
+    try:
+        for key_mode in ["emacs", "vi"]:
+            for enabled in [False, True]:
+                name = f"detach-paste-{key_mode}-{int(enabled)}"
+                output = root / f"{name}.bytes"
+                child = None
+                master = None
+                try:
+                    banner = b"\x1b[?2004h" + sample + b"\r\n"
+                    tm("new-session", "-d", "-s", name, shlex.join([
+                        "/usr/bin/python3", str(reader), str(output), banner.hex()]))
+                    tm("set-option", "-t", name, "mode-keys", key_mode)
+                    tm("set-option", "-t", name, "@detach_copy_type_through",
+                       str(int(enabled)))
+                    master, slave = pty.openpty()
+                    child = subprocess.Popen(
+                        [tmux, "-S", socket, "attach-session", "-t", name],
+                        stdin=slave, stdout=slave, stderr=slave,
+                        env=utf8, start_new_session=True)
+                    os.close(slave)
+                    wait_for(lambda: sample in tm("capture-pane", "-p", "-t", name))
+                    wait_for(lambda: name.encode() in tm(
+                        "list-clients", "-F", "#{client_session}"))
+                    tm("copy-mode", "-t", name)
+                    tm("send-keys", "-t", name, "-X", "cursor-up")
+                    tm("send-keys", "-t", name, "-X", "select-line")
+                    # Use the configured command under a C locale on the find
+                    # board, leaving the user's general clipboard untouched.
+                    tm("set-environment", "-t", name, "LC_ALL", "C")
+                    tm("send-keys", "-t", name, "-X", "copy-pipe-no-clear",
+                       copy_command + " -pboard find")
+                    wait_for(lambda: read_clipboard().rstrip(b"\n") == sample)
+                    assert tm("display-message", "-p", "-t", name,
+                              "#{pane_in_mode}").strip() == b"1"
+                    # Bound navigation must keep copy mode active.
+                    os.write(master, b"\x1b[A")
+                    time.sleep(0.05)
+                    assert tm("display-message", "-p", "-t", name,
+                              "#{pane_in_mode}").strip() == b"1"
+                    payload = read_clipboard().rstrip(b"\n") + b"\nsecond line"
+                    framed = b"\x1b[200~" + payload + b"\x1b[201~"
+                    os.write(master, framed)
+                    if enabled:
+                        wait_for(lambda: output.read_bytes() == framed)
+                        assert tm("display-message", "-p", "-t", name,
+                                  "#{pane_in_mode}").strip() == b"0"
+                        os.write(master, framed)
+                        wait_for(lambda: output.read_bytes() == framed * 2)
+                    else:
+                        time.sleep(0.15)
+                        assert output.read_bytes() == b""
+                        assert tm("display-message", "-p", "-t", name,
+                                  "#{pane_in_mode}").strip() == b"1"
+                finally:
+                    tm("kill-session", "-t", name)
+                    if child is not None:
+                        child.wait(timeout=3)
+                    if master is not None:
+                        os.close(master)
+    finally:
+        subprocess.run(["/usr/bin/pbcopy", "-pboard", "find"],
+                       input=saved, env=utf8, check=True)
+    print("UTF-8 clipboard and bracketed paste round trips passed")
+
+
+if __name__ == "__main__":
+    main()
+PY_TERMINAL_PASTE
 [ "$(tmux -L "$SOCKET" show-options -sv terminal-features | grep -Fxc -- '*:extkeys')" = "1" ]
 [ "$(tmux -L "$SOCKET" show-options -sv terminal-features | grep -Fxc -- '*:hyperlinks')" = "1" ]
 grep -Fx -- 'run' "$FAKE_POWER_ARGS_FILE" >/dev/null
