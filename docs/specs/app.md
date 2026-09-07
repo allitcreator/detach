@@ -57,6 +57,10 @@ does not open a link. A Finder drop sends shell-safe paths without
 reading files. Live views move Mac Power to metadata. An exited client offers
 Reconnect.
 
+The embedded attach client always uses a UTF-8 character locale. A conflicting
+inherited locale cannot change how tmux encodes its output. Native paste sends
+Unicode text and line breaks with the provider's bracketed paste framing.
+
 Cold start paints at most 128 rows and 1 MiB from private preferences. Cached
 rows grant no action, ownership, PID, cleanup, or power claim until a fresh
 list arrives. A failed refresh keeps them visible but not authoritative. Only

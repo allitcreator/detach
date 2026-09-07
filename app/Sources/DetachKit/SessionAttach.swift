@@ -54,6 +54,16 @@ public struct SessionAttachInvocation: Equatable, Sendable {
         if env["LANG"] == nil || env["LANG"]?.isEmpty == true {
             env["LANG"] = "en_US.UTF-8"
         }
+        // SwiftTerm always consumes UTF-8. A GUI launch can inherit LC_ALL=C,
+        // which takes precedence over LANG and makes tmux render for a
+        // non-UTF-8 client. Limit this correction to the attach client.
+        let characterLocale = ["LC_ALL", "LC_CTYPE", "LANG"]
+            .compactMap { env[$0] }.first { !$0.isEmpty } ?? ""
+        let normalizedLocale = characterLocale.uppercased()
+            .replacingOccurrences(of: "-", with: "")
+        if !normalizedLocale.contains("UTF8") {
+            env["LC_ALL"] = "en_US.UTF-8"
+        }
         return env.keys.sorted().map { key in
             "\(key)=\(env[key] ?? "")"
         }

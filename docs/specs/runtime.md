@@ -140,7 +140,11 @@ secondary.
 Managed input changes only the private server. `tmux-mouse` defaults on: wheel
 steps are one line; selection copies without clearing, exiting, or snapping;
 click clears it. ASCII/Cyrillic text, Space, Enter, and BSpace exit
-copy-mode and reach the pane while navigation/control keys stay. Off restores
+copy-mode and reach the pane while bound navigation/control keys stay.
+Unbound input, including bracketed paste, also leaves managed copy mode.
+Paste preserves its UTF-8 bytes and the provider's paste framing. The copy
+command reads UTF-8 regardless of the server locale. Attach updates older
+managed input bindings without replacing their saved original tables. Off restores
 the original copy tables immediately.
 
 `tmux-extended-keys` defaults on and maps recognized `S-Enter` to stable
