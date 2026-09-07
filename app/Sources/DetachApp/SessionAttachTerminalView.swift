@@ -272,9 +272,10 @@ final class SessionTerminalScreenCache {
     }
 }
 
-final class SessionAttachLocalProcessTerminalView: LocalProcessTerminalView {
+class SessionAttachLocalProcessTerminalView: LocalProcessTerminalView {
     var onDroppedPaths: ((String) -> Void)?
     var onFirstVisibleFrame: (() -> Void)?
+    private var didDragPointer = false
     private var didConfigureEventDrivenRenderer = false
     private var retainedScreenView: NSView?
     private var frameReadinessCheck: DispatchWorkItem?
@@ -288,6 +289,42 @@ final class SessionAttachLocalProcessTerminalView: LocalProcessTerminalView {
     required init?(coder: NSCoder) {
         super.init(coder: coder)
         registerForDraggedTypes([.fileURL])
+    }
+
+    override func copy(_ sender: Any) {
+        // tmux copies its own mouse selection on release. It is not a
+        // SwiftTerm selection, so an empty native copy must preserve it.
+        SessionAttachClipboard.write(
+            selection.getSelectedText(), to: .general)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        didDragPointer = false
+        super.mouseDown(with: event)
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        didDragPointer = true
+        super.mouseDragged(with: event)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        // SwiftTerm does not mark drags forwarded to tmux as selection drags.
+        // Disable link activation for this release, but let its normal mouse
+        // handler finish the gesture and send the release to tmux.
+        guard didDragPointer, let release = NSEvent.mouseEvent(
+            with: event.type, location: event.locationInWindow,
+            modifierFlags: event.modifierFlags.subtracting(.command),
+            timestamp: event.timestamp, windowNumber: event.windowNumber,
+            context: nil, eventNumber: event.eventNumber,
+            clickCount: event.clickCount, pressure: event.pressure) else {
+            super.mouseUp(with: event)
+            return
+        }
+        let mode = linkHighlightMode
+        linkHighlightMode = .hoverWithModifier
+        defer { linkHighlightMode = mode }
+        super.mouseUp(with: release)
     }
 
     override func viewDidMoveToWindow() {
@@ -654,6 +691,7 @@ final class SessionAttachController: NSObject, LocalProcessTerminalViewDelegate 
         view.font = Self.terminalFont(pointSize: fontPointSize)
         view.nativeBackgroundColor = ANSIParser.terminalBackground
         view.nativeForegroundColor = NSColor(white: 0.85, alpha: 1)
+        view.linkHighlightMode = .hover
         view.setAccessibilityIdentifier("session-preview-terminal")
         view.setAccessibilityLabel(L10n.string("Live session terminal"))
         view.setAccessibilityElement(true)
@@ -679,6 +717,7 @@ final class SessionAttachController: NSObject, LocalProcessTerminalViewDelegate 
 enum SessionAttachClipboard {
     @discardableResult
     static func write(_ text: String, to pasteboard: NSPasteboard) -> String {
+        guard !text.isEmpty else { return text }
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
         return text

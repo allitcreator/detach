@@ -132,11 +132,17 @@ The embedded terminal keeps the shortcuts that matter:
 | Open the standard New session sheet | `Cmd-N` |
 | Start a Quick chat immediately | `Cmd-T` |
 | Switch to a numbered Working or Answer ready session | `Cmd-1` … `Cmd-9` |
+| Copy selected text | `Cmd-C` |
+| Open a link | Click the link |
 | Paste text | `Cmd-V` |
 | Give Codex or Claude Code an image from the clipboard | `Ctrl-V` |
 | Interrupt a command or close a provider overlay | `Ctrl-C` |
 | Find terminal output | `Cmd-F` |
 | Replace an exited terminal client without restarting the agent | **Reconnect** |
+
+With managed mouse input, tmux copies the selection when you release the
+mouse button. `Cmd-C` keeps that copy when there is no native selection.
+Links show an underline on hover. Click an underlined link to open it.
 
 Settings → General selects the provider and parent folder for Quick chat. The
 default is `/tmp`. Each `Cmd-T` creates a private
