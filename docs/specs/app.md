@@ -50,7 +50,10 @@ tmux client. Closing the view ends the client.
 Terminal I/O is event-driven. CoreGraphics repaints on changes and uses a
 steady cursor. No terminal poller or frame loop runs. `Command-C/V/F` provide
 native copy, paste, and find. `Ctrl-C` and `Ctrl-V` reach providers as
-conventional control bytes. A Finder drop sends shell-safe paths without
+conventional control bytes. An empty native selection cannot clear the
+clipboard; tmux copies its mouse selection on release. Explicit and detected
+links show an underline on hover and open on a plain click. A selection drag
+does not open a link. A Finder drop sends shell-safe paths without
 reading files. Live views move Mac Power to metadata. An exited client offers
 Reconnect.
 
