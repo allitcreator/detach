@@ -29,6 +29,9 @@ Checkpoint metadata cannot replace it.
 `list --json` reads Codex and Claude concurrently and emits that order. Each
 uses one all-pane tmux snapshot and clock sample. `proc_pidinfo` reads recorded
 PIDs and 64 parents. Empty tmux output is missing; wrong identity is collision.
+List compares process creation time with recorded runtime readiness. A process
+that started in a later second is a reused PID, not a surviving runtime.
+Missing readiness or creation time keeps the conservative identity result.
 Mutations recheck ownership, pane, run token, and process group. List jobs
 `exec` cores; cleanup signals PIDs.
 

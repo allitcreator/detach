@@ -1302,7 +1302,7 @@ def main():
                 try:
                     banner = b"\x1b[?2004h" + sample + b"\r\n"
                     tm("new-session", "-d", "-s", name, shlex.join([
-                        "/usr/bin/python3", str(reader), str(output), banner.hex()]))
+                        sys.executable, str(reader), str(output), banner.hex()]))
                     tm("set-option", "-t", name, "mode-keys", key_mode)
                     tm("set-option", "-t", name, "@detach_copy_type_through",
                        str(int(enabled)))
@@ -1345,6 +1345,14 @@ def main():
                         assert output.read_bytes() == b""
                         assert tm("display-message", "-p", "-t", name,
                                   "#{pane_in_mode}").strip() == b"1"
+                except BaseException:
+                    print("terminal paste fixture:", name, file=sys.stderr)
+                    print("pane state:", tm("display-message", "-p", "-t", name,
+                          "#{pane_dead}|#{pane_dead_status}|#{pane_width}x#{pane_height}")
+                          .decode(errors="replace"), file=sys.stderr)
+                    print("pane output:", repr(tm("capture-pane", "-p", "-t", name)),
+                          file=sys.stderr)
+                    raise
                 finally:
                     tm("kill-session", "-t", name)
                     if child is not None:

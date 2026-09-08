@@ -1951,6 +1951,28 @@ final class DetachStateCommandTests: XCTestCase {
         }
     }
 
+    func testHealthInspectionRejectsPIDReusedAfterReadinessButKeepsUnknownTime() throws {
+        let pid = String(ProcessInfo.processInfo.processIdentifier)
+        let arguments = [
+            "health", "evaluate", "--metadata-valid", "true",
+            "--runtime-identity-expected", "true", "--meta-status", "stopped",
+            "--tmux", "missing", "--run-token", "missing",
+            "--worker", "unknown", "--provider-process", "unknown",
+            "--heartbeat", "missing", "--checkpoint", "missing",
+            "--checkpoint-recoverable", "false", "--agent-session-known", "true",
+            "--inspect-processes", "true", "--worker-pid", pid,
+            "--provider-pid", pid, "--pane-pid", "-",
+        ]
+        for ready in ["2000-01-01T00:00:00Z", "-", "invalid"] {
+            let output = try DetachStateCommand.run(arguments: arguments + [
+                "--runtime-ready-at", ready,
+            ])
+            let result = try JSONDecoder().decode(SessionHealthAssessment.self, from: output)
+            XCTAssertEqual(result.effectiveStatus, ready.hasPrefix("2000") ? .stopped : .hung)
+            if !ready.hasPrefix("2000") { XCTAssertTrue(result.actions.isEmpty) }
+        }
+    }
+
     func testHealthSessionEmitsTypedPublicJSONAndHidesCollisionIdentity() throws {
         let evidence = [
             "--metadata-valid", "true",
