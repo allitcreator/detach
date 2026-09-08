@@ -634,6 +634,27 @@ final class DetachStateCommandTests: XCTestCase {
         }
     }
 
+    func testMetadataPatchRejectsRedirectedLockWithoutChangingState() throws {
+        let metadata = temporaryDirectory.appendingPathComponent("meta.json")
+        _ = try DetachStateCommand.run(arguments: [
+            "meta", "create", metadata.path, "--string", "status", "stopped",
+        ])
+        let before = try Data(contentsOf: metadata)
+        let target = temporaryDirectory.appendingPathComponent("unrelated")
+        let sentinel = Data("do not change".utf8)
+        try sentinel.write(to: target)
+        let lock = temporaryDirectory.appendingPathComponent(".meta-patch.lock")
+        try? FileManager.default.removeItem(at: lock)
+        try FileManager.default.createSymbolicLink(at: lock, withDestinationURL: target)
+        XCTAssertThrowsError(try DetachStateCommand.run(arguments: [
+            "meta", "patch", metadata.path, "--string", "status", "running",
+        ])) { error in
+            XCTAssertEqual((error as? CocoaError)?.code, .fileWriteNoPermission)
+        }
+        XCTAssertEqual(try Data(contentsOf: metadata), before)
+        XCTAssertEqual(try Data(contentsOf: target), sentinel)
+    }
+
     func testHealthRevisionTracksLifecycleAndLocksButIgnoresRoutineFreshness() throws {
         let root = temporaryDirectory.appendingPathComponent("sessions")
         let session = "detach-codex-revision"
@@ -735,6 +756,10 @@ final class DetachStateCommandTests: XCTestCase {
         try FileManager.default.removeItem(at: lock)
         XCTAssertEqual(mkfifo(lock.path, mode_t(0o600)), 0)
         XCTAssertThrowsError(try assessment())
+        arguments[try XCTUnwrap(arguments.firstIndex(of: "--operation-lock")) + 1] = "operation.lock"
+        XCTAssertThrowsError(try assessment()) { error in
+            XCTAssertEqual(error as? DetachStateCommandError, .invalidArguments)
+        }
     }
 
     func testMetaSnapshotsBatchesFallbacksAndRejectsIncompleteInput() throws {
