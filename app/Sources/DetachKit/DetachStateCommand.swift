@@ -943,6 +943,18 @@ public enum DetachStateCommand {
                 where !volatile.contains(field.0) {
                 appendNULTerminated(value.map(render) ?? "", to: &record)
             }
+            // Checkpoints are published by directory exchange. A newly
+            // published recovery generation can change Recover eligibility
+            // without changing the primary runtime generation or phase.
+            var checkpoint = stat()
+            if fstatat(directory, "checkpoint", &checkpoint, AT_SYMLINK_NOFOLLOW) == 0 {
+                appendNULTerminated(
+                    "\(checkpoint.st_dev):\(checkpoint.st_ino):\(checkpoint.st_mode):\(checkpoint.st_uid)",
+                    to: &record)
+            } else {
+                guard errno == ENOENT else { throw DetachStateCommandError.invalidArguments }
+                appendNULTerminated("no-checkpoint", to: &record)
+            }
             // Shutdown evidence is also read by replacement quiescence checks.
             if let data = readOwnedMetadataFile(in: directory, name: "meta.json"),
                let values = try? SessionMetadataDocument.usableScalars(

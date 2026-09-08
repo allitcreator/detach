@@ -37,8 +37,8 @@ Mutations recheck ownership, pane, run token, and process group. List jobs
 
 List buffers its output. Metadata health revisions and tmux identities must
 match before and after assessment. A revision includes metadata validity,
-source, generation, phase, process identity, shutdown evidence, and operation
-lock state. Routine heartbeat and checkpoint timestamps do not change it.
+source, generation, phase, process identity, shutdown evidence, checkpoint
+directory identity, and operation lock state. Routine heartbeat and checkpoint timestamps do not change it.
 List retries a changed observation up to three times. Continued changes fail
 the read without partial rows. Each stable attempt uses two tmux reads and a
 constant number of state helper processes, independent of the session count.

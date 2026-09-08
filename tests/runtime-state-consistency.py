@@ -89,10 +89,10 @@ mode = os.environ["STATE_TEST_MODE"]
 real = os.environ["STATE_TEST_REAL"]
 match = ((mode == "tmux" and "list-panes" in args)
          or (mode == "placeholder" and "new-session" in args)
-         or (mode == "process" and args[:2] == ["health", "sessions"]))
+         or (mode in ("process", "checkpoint") and args[:2] == ["health", "sessions"]))
 if not match or base.with_suffix(".captured").exists():
     os.execv(real, [real] + args)
-if mode == "process":
+if mode in ("process", "checkpoint"):
     data = sys.stdin.buffer.read()
 else:
     result = subprocess.run([real] + args, capture_output=True)
@@ -102,7 +102,7 @@ while not base.with_suffix(".release").exists():
     if time.monotonic() > deadline:
         sys.exit(88)
     time.sleep(.02)
-if mode == "process":
+if mode in ("process", "checkpoint"):
     result = subprocess.run([real] + args, input=data, capture_output=True)
 sys.stdout.buffer.write(result.stdout)
 sys.stderr.buffer.write(result.stderr)
@@ -113,8 +113,8 @@ wrapper.chmod(0o755)
 
 def barrier(mode, arguments):
     base = root / mode
-    binary = state if mode == "process" else os.environ["DETACH_TMUX_BIN"]
-    override = "DETACH_STATE_BIN" if mode == "process" else "DETACH_TMUX_BIN"
+    binary = state if mode in ("process", "checkpoint") else os.environ["DETACH_TMUX_BIN"]
+    override = "DETACH_STATE_BIN" if mode in ("process", "checkpoint") else "DETACH_TMUX_BIN"
     env = dict(environment, STATE_TEST_BARRIER=str(base), STATE_TEST_MODE=mode,
                STATE_TEST_REAL=binary, **{override: str(wrapper)})
     process = subprocess.Popen(arguments, env=env, stdout=subprocess.PIPE,
@@ -154,6 +154,31 @@ finally:
 row = next(row for row in map(json.loads, output.splitlines()) if row["session_name"] == name)
 assert row["effective_status"] == "stopped", row
 assert row["health_actions"] == ["resume", "delete"]
+
+# A checkpoint publication can change recovery eligibility without a change
+# to primary metadata. Reject the observation taken before that publication.
+checkpoint = Path(metadata).parent / "checkpoint"
+preserved = Path(metadata).parent / "checkpoint-held-by-test"
+live = Path(json.loads(Path(metadata).read_text())["transcript_path"])
+assert live.is_relative_to(Path(os.environ["CODEX_HOME"]))
+held_live = root / "live-rollout"
+live.rename(held_live)
+checkpoint.rename(preserved)
+patch("--string", "status", "running")
+try:
+    assert snapshot()["effective_status"] == "orphaned"
+    base, process = barrier("checkpoint", [cli, "codex", "list", "--json"])
+    try:
+        preserved.rename(checkpoint)
+    finally:
+        output = release(base, process)
+    row = next(row for row in map(json.loads, output.splitlines()) if row["session_name"] == name)
+    assert row["effective_status"] == "recoverable", row
+finally:
+    if preserved.exists():
+        preserved.rename(checkpoint)
+    held_live.rename(live)
+    patch("--string", "status", "stopped")
 
 # Pause the actual launcher with its operation lock held after placeholder
 # creation, before metadata and tmux markers. This is a transaction, not a
