@@ -75,6 +75,7 @@ struct SessionProcessHealth: Equatable, Sendable {
 struct SessionProcessIdentity: Equatable, Sendable {
     var parentPID: pid_t
     var userID: uid_t
+    var startedAtSeconds: UInt64? = nil
 }
 
 enum ExactProcessState: String, Equatable, Sendable {
@@ -150,7 +151,8 @@ private func liveProcessIdentity(_ pid: pid_t) -> SessionProcessIdentity? {
         expected) == expected else { return nil }
     return SessionProcessIdentity(
         parentPID: pid_t(information.pbi_ppid),
-        userID: uid_t(information.pbi_uid))
+        userID: uid_t(information.pbi_uid),
+        startedAtSeconds: information.pbi_start_tvsec)
 }
 
 /// Reads only the process identities named by one health record. The result is
@@ -164,6 +166,7 @@ enum SessionProcessHealthInspector {
         workerPID rawWorkerPID: String,
         providerPID rawProviderPID: String,
         panePID rawPanePID: String,
+        runtimeReadyAt: Date? = nil,
         userID: uid_t = geteuid(),
         lookup: Lookup = liveProcessIdentity
     ) -> SessionProcessHealth {
@@ -173,7 +176,16 @@ enum SessionProcessHealthInspector {
         var identities: [pid_t: SessionProcessIdentity?] = [:]
         func identity(_ pid: pid_t) -> SessionProcessIdentity? {
             if let cached = identities[pid] { return cached }
-            let value = lookup(pid)
+            var value = lookup(pid)
+            // Readiness is published only after both recorded processes exist.
+            // A later process start proves PID reuse, even for the same UID.
+            // Compare whole seconds because metadata has second precision.
+            if (pid == workerPID || pid == providerPID),
+               let started = value?.startedAtSeconds,
+               let ready = runtimeReadyAt,
+               Double(started) > floor(ready.timeIntervalSince1970) {
+                value = nil
+            }
             identities[pid] = .some(value)
             return value
         }

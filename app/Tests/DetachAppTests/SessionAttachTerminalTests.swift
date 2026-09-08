@@ -417,6 +417,42 @@ final class SessionAttachTerminalTests: XCTestCase {
     }
 
     @MainActor
+    func testSelectionDuringSlowAttachWaitsForClientFrameAndKeepsLatestTarget() async throws {
+        let source = try XCTUnwrap(Self.session(name: "detach-codex-source"))
+        let skipped = try XCTUnwrap(Self.session(name: "detach-codex-skipped"))
+        let target = try XCTUnwrap(Self.session(name: "detach-codex-target"))
+        let terminal = SessionAttachLocalProcessTerminalView(
+            frame: NSRect(x: 0, y: 0, width: 640, height: 360))
+        let controller = SessionAttachController(invocation: Self.invocation())
+        controller.configure(terminal, fontPointSize: 13)
+        // A running child is initially the attach wrapper, not a registered
+        // tmux client. Let startup exceed the CLI's client lookup retry bound.
+        terminal.startProcess(executable: "/bin/sleep", args: ["5"])
+        defer { controller.terminateClient() }
+        let cli = RecordingSessionSwitchCLI()
+        let coordinator = SessionAttachTerminalView.Coordinator(
+            controller: controller, session: source,
+            screenCache: SessionTerminalScreenCache(),
+            onTerminated: { _ in }, onSwitchFailed: { XCTFail($0) },
+            switchCLI: cli)
+        terminal.onFirstVisibleFrame = { [weak terminal, weak coordinator] in
+            guard let terminal else { return }
+            coordinator?.reportFirstVisibleFrame(from: terminal)
+        }
+        coordinator.requestSession(skipped, in: terminal)
+        coordinator.requestSession(target, in: terminal)
+        try await Task.sleep(nanoseconds: 600_000_000)
+        let earlyCalls = await cli.recordedCalls()
+        XCTAssertTrue(earlyCalls.isEmpty)
+        terminal.dataReceived(slice: Array("attached tmux frame".utf8)[...])
+        await waitUntilAsync { coordinator.session.id == target.id }
+        let calls = await cli.recordedCalls()
+        XCTAssertEqual(calls, [SessionClientSwitchInvocation.arguments(
+            clientPID: terminal.process.shellPid, from: source, to: target)])
+        coordinator.cancelSwitch()
+    }
+
+    @MainActor
     func testDetailLogReplacesReadErrorWithSuccessfulStyledOutput() async throws {
         let session = try XCTUnwrap(Self.session(status: "stopped"))
         let cli = DetailLogSequenceCLI(responses: [
@@ -1244,6 +1280,57 @@ final class SessionAttachTerminalTests: XCTestCase {
         terminal.dataReceived(slice: Array("more output".utf8)[...])
         RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.12))
         XCTAssertEqual(visibleFrameCount, 1)
+    }
+
+    @MainActor
+    func testAttachStartsWithVisibleGeometryAndCancelledHostNeverStarts() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("detach-sized-attach-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let record = root.appendingPathComponent("size")
+        let executable = root.appendingPathComponent("detach")
+        try "#!/bin/sh\nstty size > '\(record.path)'\nexec /bin/cat\n"
+            .write(to: executable, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755],
+                                             ofItemAtPath: executable.path)
+        let controller = SessionAttachController(invocation: SessionAttachInvocation(
+            detachPath: executable.path, session: try XCTUnwrap(Self.session()),
+            baseEnvironment: ["PATH": "/bin:/usr/bin"]))
+        let terminal = SessionAttachLocalProcessTerminalView(frame: .zero)
+        controller.configure(terminal, fontPointSize: 13)
+        controller.start()
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
+        XCTAssertFalse(terminal.process.running)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
+                              styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { controller.terminateClient(); window.close() }
+        window.contentView = terminal
+        terminal.setFrameSize(NSSize(width: 900, height: 600))
+        try waitUntil { FileManager.default.fileExists(atPath: record.path) }
+        let actual = try String(contentsOf: record, encoding: .utf8)
+            .split(whereSeparator: \.isWhitespace).compactMap { Int($0) }
+        XCTAssertEqual(actual, [terminal.terminal.rows, terminal.terminal.cols])
+        XCTAssertGreaterThan(terminal.terminal.rows, 24)
+
+        let cancelled = SessionAttachLocalProcessTerminalView(frame: .zero)
+        var starts = 0
+        cancelled.startWhenSized { starts += 1 }
+        cancelled.stopFrameObservation()
+        window.contentView = cancelled
+        cancelled.setFrameSize(NSSize(width: 900, height: 600))
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
+        XCTAssertEqual(starts, 0)
+    }
+
+    @MainActor
+    func testSilentAttachCannotKeepAStaleScreenOverLiveInput() throws {
+        let terminal = SessionAttachLocalProcessTerminalView(
+            frame: NSRect(x: 0, y: 0, width: 640, height: 360))
+        terminal.retainScreen(Data("stale snapshot".utf8), fontPointSize: 13)
+        try waitUntil(timeout: 1.3) { !terminal.isRetainingScreen }
+        XCTAssertNil(terminal.terminal.getBufferAsData().range(of: Data("stale snapshot".utf8)))
     }
 
     func testDroppedPathNeverInsertsAControlCharacter() {

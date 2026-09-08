@@ -46,6 +46,9 @@ keeps sheet errors, and selects the new session. Start, Resume, and Recover open
 `detach <provider> attach --terminal-features sync <session>` in one visible
 PTY. Live-to-live selection keeps it and asks the public CLI to switch its exact
 tmux client. Closing the view ends the client.
+The PTY starts after the terminal has a window and a nonzero size. Selection
+changes during cold attach wait for the first tmux frame before client lookup.
+The latest selected session wins. A removed host cannot start a delayed PTY.
 
 Terminal I/O is event-driven. CoreGraphics repaints on changes and uses a
 steady cursor. No terminal poller or frame loop runs. `Command-C/V/F` provide

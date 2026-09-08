@@ -424,6 +424,7 @@ public enum DetachStateCommand {
         let allowed = required.union(processInspection).union([
             "--stop-requested", "--lifecycle-phase", "--uncommitted-replacement",
             "--runtime-quiescent",
+            "--runtime-ready-at",
         ])
         var values: [String: String] = [:]
         var index = 0
@@ -483,7 +484,10 @@ public enum DetachStateCommand {
                 tmuxState: tmux,
                 workerPID: workerPID,
                 providerPID: providerPID,
-                panePID: panePID)
+                panePID: panePID,
+                runtimeReadyAt: values["--runtime-ready-at"].flatMap {
+                    ISO8601DateFormatter().date(from: $0)
+                })
             worker = processHealth.worker
             providerProcess = processHealth.provider
         } else if !processInspection.isDisjoint(with: values.keys) {

@@ -6985,6 +6985,7 @@ session_health_envelope() {
       --worker-pid "${worker_pid:--}"
       --provider-pid "${provider_pid:--}"
       --pane-pid "${pane_pid:--}"
+      --runtime-ready-at "${runtime_ready_at:--}"
     )
   fi
   case "$output_mode" in

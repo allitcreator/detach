@@ -331,9 +331,39 @@ class SessionAttachLocalProcessTerminalView: LocalProcessTerminalView {
         super.viewDidMoveToWindow()
         guard window != nil else { return }
         configureRealtimeRendererIfNeeded()
+        scheduleSizedStart()
         DispatchQueue.main.async { [weak self] in
             guard let self, let window = self.window else { return }
             window.makeFirstResponder(self)
+        }
+    }
+
+    private var pendingStart: (() -> Void)?
+    private var startScheduled = false
+    private var retainedScreenDeadline: DispatchWorkItem?
+
+    func startWhenSized(_ start: @escaping () -> Void) {
+        pendingStart = start
+        scheduleSizedStart()
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        scheduleSizedStart()
+    }
+
+    private func scheduleSizedStart() {
+        guard pendingStart != nil, !startScheduled,
+              window != nil, bounds.width > 0, bounds.height > 0 else { return }
+        startScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.startScheduled = false
+            guard self.window != nil,
+                  self.bounds.width > 0, self.bounds.height > 0 else { return }
+            let start = self.pendingStart
+            self.pendingStart = nil
+            start?()
         }
     }
 
@@ -352,6 +382,11 @@ class SessionAttachLocalProcessTerminalView: LocalProcessTerminalView {
         overlay.autoresizingMask = [.width, .height]
         addSubview(overlay, positioned: .above, relativeTo: nil)
         retainedScreenView = overlay
+        let deadline = DispatchWorkItem { [weak self] in
+            self?.removeRetainedScreen()
+        }
+        retainedScreenDeadline = deadline
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: deadline)
     }
 
     override func dataReceived(slice: ArraySlice<UInt8>) {
@@ -376,17 +411,24 @@ class SessionAttachLocalProcessTerminalView: LocalProcessTerminalView {
     }
 
     func removeRetainedScreen() {
+        retainedScreenDeadline?.cancel()
+        retainedScreenDeadline = nil
+        needsDisplay = true
         retainedScreenView?.removeFromSuperview()
         retainedScreenView = nil
     }
 
     func stopFrameObservation() {
+        pendingStart = nil
+        retainedScreenDeadline?.cancel()
+        retainedScreenDeadline = nil
         frameReadinessCheck?.cancel()
         frameReadinessCheck = nil
         onFirstVisibleFrame = nil
     }
 
     var isRetainingScreen: Bool { retainedScreenView != nil }
+    var hasFirstVisibleFrame: Bool { didReportFirstVisibleFrame }
 
     static func hasVisibleContent(in terminal: Terminal) -> Bool {
         (0..<terminal.rows).contains { row in
@@ -706,6 +748,17 @@ final class SessionAttachController: NSObject, LocalProcessTerminalViewDelegate 
     }
 
     func start(on view: LocalProcessTerminalView) {
+        if let terminal = view as? SessionAttachLocalProcessTerminalView {
+            terminal.startWhenSized { [weak self, weak view] in
+                guard let self, let view else { return }
+                self.startSizedProcess(on: view)
+            }
+        } else {
+            startSizedProcess(on: view)
+        }
+    }
+
+    private func startSizedProcess(on view: LocalProcessTerminalView) {
         view.startProcess(
             executable: invocation.executable,
             args: invocation.arguments,
@@ -837,6 +890,11 @@ struct SessionAttachTerminalView: NSViewRepresentable {
         ) {
             attachedView = view
             desiredSession = target
+            guard view.process.running || view.process.shellPid > 0 else { return }
+            // The child PID initially belongs to the public attach CLI. Wait
+            // for its tmux frame before requesting an exact-client switch.
+            if let terminal = view as? SessionAttachLocalProcessTerminalView,
+               !terminal.hasFirstVisibleFrame { return }
             guard target.id != session.id, switchTask == nil else { return }
             switchTask = Task { @MainActor [weak self, weak view] in
                 await self?.drainSwitches(in: view)
@@ -903,6 +961,7 @@ struct SessionAttachTerminalView: NSViewRepresentable {
         func reportFirstVisibleFrame(from view: LocalProcessTerminalView) {
             captureScreen(from: view)
             onFirstVisibleFrame()
+            requestSession(desiredSession, in: view)
         }
 
         func installKeyboardMonitor(for view: LocalProcessTerminalView) {

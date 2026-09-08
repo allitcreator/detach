@@ -166,10 +166,12 @@ Attach, Resume, and Recover.
 The live terminal processes PTY input and output as events. Its stable
 CoreGraphics renderer repaints only when content changes. A steady cursor
 avoids an idle redraw timer. Switching between live sessions keeps the same
-terminal and PTY. tmux synchronized output replaces the complete frame at once.
+terminal and PTY. The first attach waits for the visible terminal size. A
+selection change during attachment waits for the tmux client to become ready.
+tmux synchronized output replaces the complete frame at once.
 
 Detach preloads the last text screen for up to nine live sessions in a small
-bounded burst. A cold attachment can show that text until its first frame. It
+bounded burst. A cold attachment can show that text for up to one second. It
 does not keep hidden PTYs alive or use raster snapshots during live switching.
 
 Detach preloads recent non-live session logs in a bounded startup burst. This
