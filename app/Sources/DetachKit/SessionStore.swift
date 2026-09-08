@@ -642,19 +642,32 @@ public final class SessionStore {
     }
 
     /// Starts Resume or Recover without an outer terminal. The provider starts
-    /// detached; the app creates a separate attach-only PTY after this returns.
+    /// detached; a fresh starting snapshot can open its attach-only PTY while
+    /// this command still waits for full readiness.
     public func prepareInteractive(
         _ action: SessionAction,
-        on session: Session
+        on session: Session,
+        terminalSize: SessionTerminalSize? = nil
     ) async -> String? {
         let arguments: [String]
         let timeoutMessage: String
+        var projectDirectory: URL?
         switch action {
         case .resume:
             guard let sessionID = session.agentSessionId, !sessionID.isEmpty else {
                 return L10n.string("The session has no provider UUID to resume.")
             }
-            arguments = ["resume", "--detach", sessionID]
+            if let path = session.projectDir, path.hasPrefix("/") {
+                projectDirectory = URL(fileURLWithPath: path, isDirectory: true)
+                arguments = [
+                    session.provider.rawValue, "resume", "--name", session.sessionName,
+                    "--detach", sessionID,
+                ]
+            } else {
+                // Legacy rows can omit the project. Let the public resolver
+                // recover it instead of starting in the app's working directory.
+                arguments = ["resume", "--detach", sessionID]
+            }
             timeoutMessage = L10n.string("detach resume timed out")
         case .recover:
             arguments = [
@@ -671,7 +684,20 @@ public final class SessionStore {
         }
 
         do {
-            let result = try await cli.run(arguments: arguments, timeout: 120)
+            var result = try await cli.run(
+                arguments: (terminalSize?.arguments ?? []) + arguments, timeout: 120,
+                currentDirectoryURL: projectDirectory)
+            // A payload update can wait for existing sessions to finish. An
+            // older frontend rejects this prefix before dispatching startup.
+            // Retry only that exact pre-dispatch rejection, never a run error.
+            if terminalSize != nil, result.exitCode == 1, !result.timedOut,
+               result.stdout.isEmpty,
+               result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+                == "detach: unknown command: --terminal-size" {
+                result = try await cli.run(
+                    arguments: arguments, timeout: 120,
+                    currentDirectoryURL: projectDirectory)
+            }
             await refresh()
             if result.timedOut {
                 return timeoutMessage

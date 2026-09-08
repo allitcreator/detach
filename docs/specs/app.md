@@ -49,6 +49,18 @@ tmux client. Closing the view ends the client.
 The PTY starts after the terminal has a window and a nonzero size. Selection
 changes during cold attach wait for the first tmux frame before client lookup.
 The latest selected session wins. A removed host cannot start a delayed PTY.
+Resume uses the selected project, provider, managed name, and provider UUID.
+If the project is missing, the public UUID resolver finds it. Resume and
+Recover can open the terminal from a fresh attachable snapshot of the new run
+before the command completes. The lifecycle ID must change, or a legacy row
+must have a later creation time. An old or unidentified run waits for command
+completion. An exited early client does not reconnect during preparation.
+The preparation command still reports readiness failures.
+Resume and Recover pass the visible terminal size before the provider starts.
+The app measures this size with the terminal font and SwiftTerm layout. This
+prevents initial output from wrapping at the default detached window width.
+If an older CLI rejects the size prefix before startup, the app retries without
+the hint. No startup failure or timeout permits this retry.
 
 Terminal I/O is event-driven. CoreGraphics repaints on changes and uses a
 steady cursor. No terminal poller or frame loop runs. `Command-C/V/F` provide

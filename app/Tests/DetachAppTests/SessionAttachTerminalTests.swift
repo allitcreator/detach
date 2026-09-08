@@ -1313,6 +1313,15 @@ final class SessionAttachTerminalTests: XCTestCase {
             .split(whereSeparator: \.isWhitespace).compactMap { Int($0) }
         XCTAssertEqual(actual, [terminal.terminal.rows, terminal.terminal.cols])
         XCTAssertGreaterThan(terminal.terminal.rows, 24)
+        let initialSize = SessionAttachController.initialSize(
+            surfaceSize: terminal.bounds.size, fontPointSize: 13)
+        XCTAssertEqual(initialSize?.columns, terminal.terminal.cols)
+        XCTAssertEqual(initialSize?.rows, terminal.terminal.rows)
+        XCTAssertNil(SessionAttachController.initialSize(
+            surfaceSize: .zero, fontPointSize: 13))
+        let largerFontSize = SessionAttachController.initialSize(
+            surfaceSize: terminal.bounds.size, fontPointSize: 18)
+        XCTAssertLessThan(try XCTUnwrap(largerFontSize?.columns), terminal.terminal.cols)
 
         let cancelled = SessionAttachLocalProcessTerminalView(frame: .zero)
         var starts = 0

@@ -451,10 +451,33 @@ enum UIE2ETestDriver {
                         .appendingPathComponent("fake/actions.log"),
                     encoding: .utf8)
                 return actions?.contains(
-                    "resume --detach a9f58f1d-1234-5678-9abc-def012342ed9") == true
+                    "claude resume --name detach-claude-ui-completed --detach a9f58f1d-1234-5678-9abc-def012342ed9") == true
             }
             try await waitUntil("resumed session attaches in app", attempts: 80) {
-                find(identifier: "session-preview-terminal") != nil
+                let invocations = try? String(
+                    contentsOf: configuration.root.appendingPathComponent("fake/invocations.log"),
+                    encoding: .utf8)
+                return find(identifier: "session-preview-terminal") != nil
+                    && invocations?.contains(
+                        "claude attach --terminal-features sync detach-claude-ui-completed") == true
+            }
+            let resumeCompleted = configuration.root.appendingPathComponent("fake/resume-completed")
+            guard !FileManager.default.fileExists(atPath: resumeCompleted.path) else {
+                throw Failure(message:
+                    "Resume must show its terminal before the readiness command completes")
+            }
+            let initialSize = try String(
+                contentsOf: configuration.root.appendingPathComponent("fake/initial-terminal-size"),
+                encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let terminal = find(identifier: "session-preview-terminal")
+                as? LocalProcessTerminalView,
+                initialSize.split(separator: "x").first.flatMap({ Int($0) }) == terminal.terminal.cols
+            else {
+                throw Failure(message: "Resume must pass the visible terminal width before startup")
+            }
+            try Data().write(to: configuration.root.appendingPathComponent("fake/release-resume"))
+            try await waitUntil("resume readiness completes") {
+                FileManager.default.fileExists(atPath: resumeCompleted.path)
             }
             checks.append("resume-runs-in-app-with-terminal-fallback")
             let runningID = "detach-codex-ui-running"

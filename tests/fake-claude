@@ -14,6 +14,9 @@ session_id=""
 full_task_value="${FAKE_CLAUDE_TASK_VALUE:-full-id}"
 
 printf '%s\n' "$@" >"$args_file"
+if [ -t 0 ]; then
+  stty size >"$args_file.terminal-size"
+fi
 
 while [ "$#" -gt 0 ]; do
   case "$1" in

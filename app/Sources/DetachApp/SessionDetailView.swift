@@ -113,6 +113,8 @@ struct SessionDetailView: View {
     @State private var attachClientActive = true
     @State private var attachRequested = false
     @State private var preparingAction: SessionAction?
+    @State private var preparingSession: Session?
+    @State private var terminalSurfaceSize: CGSize = .zero
     @State private var interactionGeneration = UUID()
 
     var body: some View {
@@ -133,6 +135,7 @@ struct SessionDetailView: View {
             attachClientActive = true
             attachRequested = false
             preparingAction = nil
+            preparingSession = nil
         }
         .alert(L10n.string("Something went wrong"), isPresented: .init(
             get: { actionError != nil }, set: { if !$0 { actionError = nil } })) {
@@ -343,11 +346,11 @@ struct SessionDetailView: View {
     }
 
     private var showsEmbeddedTerminal: Bool {
-        attachRequested || (
-            preparingAction == nil
-                && SessionAttachInvocation.shouldEmbed(
-                    session,
-                    clientActive: attachClientActive))
+        attachRequested || SessionAttachInvocation.shouldEmbed(
+            session,
+            clientActive: attachClientActive
+                && (preparingSession == nil || store.hasFreshSnapshot),
+            replacing: preparingSession)
     }
 
     private var logTaskID: String {
@@ -455,6 +458,9 @@ struct SessionDetailView: View {
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: 8))
+        .onGeometryChange(for: CGSize.self) { $0.size } action: {
+            terminalSurfaceSize = $0
+        }
 // quality-coverage:begin ui-e2e-instrumentation
 #if !DEBUG
         .background {
@@ -698,14 +704,20 @@ struct SessionDetailView: View {
         guard preparingAction == nil,
               action == .resume || action == .recover else { return }
         let sessionID = session.id
-        attachClientActive = false
+        attachClientActive = true
         preparingAction = action
+        preparingSession = session
         Task {
-            let message = await store.prepareInteractive(action, on: session)
+            let size = SessionAttachController.initialSize(
+                surfaceSize: terminalSurfaceSize, fontPointSize: fontPointSize)
+            let message = await store.prepareInteractive(
+                action, on: session, terminalSize: size)
             guard interactionGeneration == generation,
                   session.id == sessionID else { return }
             preparingAction = nil
+            preparingSession = nil
             if let message {
+                attachClientActive = false
                 actionError = message
                 return
             }

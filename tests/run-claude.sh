@@ -259,7 +259,9 @@ wait_for_fake_claude_ready() {
 
 wait_for_file_text() {
   local file="$1" text="$2" attempts=0
-  while [ "$attempts" -lt 100 ]; do
+  # Recovery can restore and sync the prior generation before fixture entry.
+  # Allow its entry wait to cover the runtime readiness window.
+  while [ "$attempts" -lt 400 ]; do
     if [ -f "$file" ] && grep -Fx -- "$text" "$file" >/dev/null 2>&1; then
       return 0
     fi
@@ -1076,8 +1078,9 @@ printf 'previous live tree\n' >"$stale_restore_destination.detach.old/sentinel"
 printf 'incomplete new tree\n' >"$stale_restore_destination.detach.tmp/sentinel"
 
 reset_fake_claude_ready
-"$SCRIPT" claude recover --detach "$human_label"
+"$SCRIPT" --terminal-size 123x41 claude recover --detach "$human_label"
 wait_for_fake_claude_ready
+[ "$(awk '{print $1, $2}' "$FAKE_CLAUDE_ARGS_FILE.terminal-size")" = '41 123' ]
 [ "$("$STATE_HELPER" meta get "$meta" display_name)" = "$human_label" ]
 grep -Fx -- '--resume' "$FAKE_CLAUDE_ARGS_FILE" >/dev/null
 grep -Fx -- "$session_id" "$FAKE_CLAUDE_ARGS_FILE" >/dev/null
