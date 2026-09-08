@@ -85,7 +85,8 @@ Hosted CI is the merge-readiness authority.
   heavy and one integration lane.
 - Exact keys bind inputs and toolchain. `main` warms missing products. CI
   verifies hits and misses, then reuses a fresh app. Warming emits no
-  evidence.
+  evidence. On a miss, a shard with the app stage builds inside that stage.
+  Other shards prepare the app before their checks.
 - CI uses the newest green `main` artifact with metrics; a later run without
   them does not replace it. Test identities and aggregate or critical-source
   coverage cannot decrease. Changed Swift lines need 90 percent coverage; a

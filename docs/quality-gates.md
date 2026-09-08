@@ -155,10 +155,11 @@ Swift tests, the normal app, and the instrumented app use isolated scratch and
 module-cache paths. CI materializes their shared dependency cache once before
 parallel builds. A host with at least three CPUs splits workers and builds all
 three at the same time. Smaller hosts run Swift and app work in sequence.
-The normal bundle is verified. On a hosted app-cache miss, the successful
-fresh build becomes the exact app for that job. The selected app stage verifies
-the same bundle and does not build it again. A failed build cannot create this
-binding. Only the private UI copy gets the instrumented executable.
+The normal bundle is verified. On a hosted app-cache miss, the shard that owns
+the app stage builds the app in that stage. Other shards build the app before
+their checks and bind the successful build as the exact app for that job.
+A cache hit requires verification before reuse. A failed build cannot create
+this binding. Only the private UI copy gets the instrumented executable.
 The short packaged UI lane runs after the verified app and before the
 CPU-intensive provider, runtime, and gate-contract lanes. This prevents
 WindowServer event delivery from competing with those workers. The UI smoke
