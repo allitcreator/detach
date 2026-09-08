@@ -216,6 +216,7 @@ final class DetachStateCommandTests: XCTestCase {
             ["meta", "snapshot", "only-path"],
             ["meta", "recovery-binding", "only-path"],
             ["meta", "snapshots"],
+            ["meta", "health-revision"],
             ["health", "session", "--"],
             ["health", "session", "no-separator"],
             ["health", "sessions"],
@@ -673,6 +674,16 @@ final class DetachStateCommandTests: XCTestCase {
         XCTAssertNotEqual(try revision(), shutdown)
         XCTAssertEqual(testMetadataFileLock(descriptor, LOCK_UN), 0)
         XCTAssertEqual(try revision(), shutdown)
+        let checkpoint = directory.appendingPathComponent("checkpoint")
+        try FileManager.default.createDirectory(at: checkpoint, withIntermediateDirectories: false)
+        let published = try revision()
+        XCTAssertNotEqual(published, shutdown, "Checkpoint publication changes recovery eligibility")
+        try Data("cache receipt".utf8).write(to: checkpoint.appendingPathComponent("receipt"))
+        XCTAssertEqual(try revision(), published, "Receipt writes do not publish a checkpoint")
+        try FileManager.default.moveItem(at: checkpoint,
+            to: directory.appendingPathComponent("previous-checkpoint"))
+        try FileManager.default.createDirectory(at: checkpoint, withIntermediateDirectories: false)
+        XCTAssertNotEqual(try revision(), published, "Replacement must change the generation")
         try FileManager.default.removeItem(at: lock)
         try FileManager.default.createSymbolicLink(at: lock, withDestinationURL: metadata)
         XCTAssertThrowsError(try revision())
@@ -680,7 +691,7 @@ final class DetachStateCommandTests: XCTestCase {
 
     func testListOperationLockClosesProvisionalFaultWithoutConcealingPersistentCollision() throws {
         let lock = temporaryDirectory.appendingPathComponent("operation.lock")
-        let arguments = [
+        var arguments = [
             "health", "evaluate", "--metadata-valid", "true",
             "--runtime-identity-expected", "true", "--meta-status", "stopped",
             "--tmux", "foreign", "--run-token", "missing", "--worker", "dead",
@@ -704,7 +715,22 @@ final class DetachStateCommandTests: XCTestCase {
         XCTAssertFalse(busy.ownershipProven)
         XCTAssertFalse(busy.cleanupEligible)
         XCTAssertEqual(busy.reconcileAction, .none)
+        for (key, value) in [
+            ("--tmux", "live"), ("--run-token", "match"),
+            ("--worker", "alive"), ("--provider-process", "alive"),
+            ("--meta-status", "running"),
+        ] {
+            arguments[try XCTUnwrap(arguments.firstIndex(of: key)) + 1] = value
+        }
+        let attachable = try assessment()
+        XCTAssertEqual(attachable.effectiveStatus, .running)
+        XCTAssertTrue(attachable.ownershipProven)
+        XCTAssertEqual(attachable.actions, [.attach])
+        XCTAssertFalse(attachable.cleanupEligible)
+        XCTAssertEqual(attachable.reconcileAction, .none)
         XCTAssertEqual(testMetadataFileLock(descriptor, LOCK_UN), 0)
+        XCTAssertEqual(try assessment().actions, [.attach, .stop])
+        arguments[try XCTUnwrap(arguments.firstIndex(of: "--tmux")) + 1] = "foreign"
         XCTAssertEqual(try assessment().effectiveStatus, .collision)
         try FileManager.default.removeItem(at: lock)
         XCTAssertEqual(mkfifo(lock.path, mode_t(0o600)), 0)
