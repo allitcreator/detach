@@ -59,9 +59,11 @@ for invocation in \
   'codex attach --terminal-features sync detach-codex-ui-running' \
   'codex logs --ansi detach-codex-ui-recoverable' \
   'codex recover --detach detach-codex-ui-recoverable' \
+  '--terminal-size 137x47 codex recover --detach detach-codex-ui-recoverable' \
   'codex attach --terminal-features sync detach-codex-ui-recoverable' \
   'claude logs --ansi detach-claude-ui-completed' \
-  'resume --detach a9f58f1d-1234-5678-9abc-def012342ed9' \
+  'claude resume --name detach-claude-ui-completed --detach a9f58f1d-1234-5678-9abc-def012342ed9' \
+  '--terminal-size 137x47 claude resume --name detach-claude-ui-completed --detach a9f58f1d-1234-5678-9abc-def012342ed9' \
   'claude attach --terminal-features sync detach-claude-ui-completed' \
   'claude --detach' \
   'claude attach --terminal-features sync detach-claude-ui-new' \
@@ -73,6 +75,9 @@ for invocation in \
 done
 
 for invocation in \
+  '--terminal-size 0x47 codex recover --detach detach-codex-ui-recoverable' \
+  '--terminal-size 1000x47 codex recover --detach detach-codex-ui-recoverable' \
+  '--terminal-size 137x47 codex stop detach-codex-ui-running' \
   'config tmux-style detach' \
   'config tmux-extended-keys on' \
   'storage cleanup --dry-run --json' \

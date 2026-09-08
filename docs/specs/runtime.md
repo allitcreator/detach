@@ -73,6 +73,12 @@ canonical project beneath the cleanup trap.
 
 Tmux environment arguments stay in memory; credentials never touch disk.
 
+The public `--terminal-size COLSxROWS` prefix accepts dimensions from 1 to 999
+for explicit Start, Resume, and Recover commands. It sets the initial detached
+window size before the provider starts. The hint crosses startup locks in
+memory. It is not saved with provider options or copied into the provider
+environment. Attached clients still control subsequent terminal dimensions.
+
 When the provider pane dies, tmux detaches its clients. External terminals
 return to their original shell.
 The completion hook requires the exact pane ID and run token. It targets the

@@ -2,6 +2,16 @@ import XCTest
 @testable import DetachKit
 
 final class SessionAttachTests: XCTestCase {
+    func testInitialSizeAcceptsOnlyBoundedPositiveDimensions() {
+        XCTAssertEqual(SessionTerminalSize(columns: 152, rows: 43)?.arguments,
+                       ["--terminal-size", "152x43"])
+        XCTAssertNotNil(SessionTerminalSize(columns: 1, rows: 999))
+        XCTAssertNil(SessionTerminalSize(columns: 0, rows: 43))
+        XCTAssertNil(SessionTerminalSize(columns: 152, rows: -1))
+        XCTAssertNil(SessionTerminalSize(columns: 1000, rows: 43))
+        XCTAssertNil(SessionTerminalSize(columns: 152, rows: 1000))
+    }
+
     func testPublicAttachUsesArgvAndNeverCallsTmux() {
         let invocation = SessionAttachInvocation(
             detachPath: "/Users/me/.local/bin/detach",
@@ -102,6 +112,42 @@ final class SessionAttachTests: XCTestCase {
             SessionAttachInvocation.shouldEmbed(session(status: .running), clientActive: false))
         XCTAssertFalse(
             SessionAttachInvocation.shouldEmbed(session(status: .stopped), clientActive: true))
+    }
+
+    func testResumeCanShowOnlyANewAttachableGenerationBeforeCompletion() {
+        var previous = session(status: .stopped)
+        previous.lifecycleID = "previous-run"
+        var starting = session(status: .starting)
+        starting.lifecycleID = "replacement-run"
+        XCTAssertTrue(SessionAttachInvocation.shouldEmbed(
+            starting, clientActive: true, replacing: previous))
+        XCTAssertFalse(SessionAttachInvocation.shouldEmbed(
+            starting, clientActive: false, replacing: previous),
+            "An exited early client must not restart while Resume is pending")
+        starting.lifecycleID = previous.lifecycleID
+        XCTAssertFalse(SessionAttachInvocation.shouldEmbed(
+            starting, clientActive: true, replacing: previous))
+        starting.lifecycleID = "replacement-run"
+        starting.sessionName = "detach-codex-other"
+        XCTAssertFalse(SessionAttachInvocation.shouldEmbed(
+            starting, clientActive: true, replacing: previous))
+        starting = previous
+        starting.lifecycleID = "replacement-run"
+        XCTAssertFalse(SessionAttachInvocation.shouldEmbed(
+            starting, clientActive: true, replacing: previous))
+    }
+
+    func testResumeLegacyGenerationRequiresALaterCreationTime() {
+        var previous = session(status: .stopped)
+        var starting = session(status: .starting)
+        XCTAssertFalse(SessionAttachInvocation.shouldEmbed(
+            starting, clientActive: true, replacing: previous))
+        previous.createdAt = Date(timeIntervalSince1970: 100)
+        for value in [99.0, 100.0, 101.0] {
+            starting.createdAt = Date(timeIntervalSince1970: value)
+            XCTAssertEqual(SessionAttachInvocation.shouldEmbed(
+                starting, clientActive: true, replacing: previous), value > 100)
+        }
     }
 
     private func session(

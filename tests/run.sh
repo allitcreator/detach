@@ -494,6 +494,18 @@ test_sqlite() {
 }
 
 if codex_part_selected preflight; then
+for size in 0x24 80x0 1000x24 80x1000 080x24 80X24 '80x24;exit'; do
+  if "$DETACH" --terminal-size "$size" codex start --detach >"$TMP_ROOT/invalid-size.out" 2>&1; then
+    printf 'accepted invalid startup terminal size: %s\n' "$size" >&2
+    exit 1
+  fi
+  grep -F 'terminal size must be COLSxROWS' "$TMP_ROOT/invalid-size.out" >/dev/null
+done
+if "$DETACH" --terminal-size 80x24 codex stop >"$TMP_ROOT/invalid-size-command.out" 2>&1; then
+  printf 'accepted a startup terminal size on Stop\n' >&2
+  exit 1
+fi
+grep -F 'requires an explicit start, resume, or recover command' "$TMP_ROOT/invalid-size-command.out" >/dev/null
   bash -n "$SCRIPT"
   bash -n "$ROOT/bin/detach-core"
   [ "$($SCRIPT __version)" = "$(<"$ROOT/VERSION")" ]
@@ -2856,7 +2868,9 @@ mkdir -p "$other_cwd"
 # event.
 status_hint="$(cat "$DETACH_STATE_ROOT/session-change")"
 (cd "$other_cwd" && DETACH_CODEX_BIN="$uppercase_codex" \
-  "$DETACH" resume --name integration --detach "$uppercase_id")
+  "$DETACH" --terminal-size 137x47 resume --name integration --detach "$uppercase_id")
+[ "$(awk '{print $1, $2}' "$FAKE_CODEX_ARGS_FILE.terminal-size")" = '47 137' ]
+[ -z "$(cat "$FAKE_CODEX_ARGS_FILE.initial-size-hint")" ]
 : >"$uppercase_release"
 wait_for_tmux_option "$SESSION" @detach_status completed
 grep -Fx 'resume' "$FAKE_CODEX_ARGS_FILE" >/dev/null

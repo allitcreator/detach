@@ -163,6 +163,11 @@ Start, Resume, and Recover run inside Detach and do not require an outer
 terminal. The selected external terminal remains available as a fallback for
 Attach, Resume, and Recover.
 
+Resume and Recover show the new terminal as soon as the session can accept an
+attachment. Startup checks continue, and Detach reports any startup error.
+With the current CLI, the provider receives the visible terminal size before
+its first output.
+
 The live terminal processes PTY input and output as events. Its stable
 CoreGraphics renderer repaints only when content changes. A steady cursor
 avoids an idle redraw timer. Switching between live sessions keeps the same

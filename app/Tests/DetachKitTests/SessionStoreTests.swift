@@ -663,7 +663,10 @@ final class SessionStoreTests: XCTestCase {
         XCTAssertNil(error)
         XCTAssertEqual(
             cli.calls,
-            [["list", "--json"], ["resume", "--detach", "u1"], ["list", "--json"]])
+            [["list", "--json"], ["codex", "resume", "--name", "detach-codex-p-1", "--detach", "u1"], ["list", "--json"]])
+        XCTAssertEqual(cli.currentDirectories.count, 1)
+        XCTAssertEqual(cli.currentDirectories.first ?? nil,
+                       URL(fileURLWithPath: "/tmp/p", isDirectory: true))
     }
 
     func testPrepareRecoverUsesProviderAndManagedName() async throws {
@@ -687,13 +690,85 @@ final class SessionStoreTests: XCTestCase {
         ]))
     }
 
+    func testPrepareActionsPassInitialTerminalSize() async throws {
+        for action in [SessionAction.resume, .recover] {
+            let cli = FakeCLI()
+            cli.responses["list --json"] = ok(line)
+            let store = SessionStore(cli: cli)
+            await store.refresh()
+            let error = await store.prepareInteractive(
+                action, on: try XCTUnwrap(store.sessions.first),
+                terminalSize: SessionTerminalSize(columns: 137, rows: 47))
+            XCTAssertNil(error)
+            XCTAssertEqual(Array(cli.calls[1].prefix(4)),
+                           ["--terminal-size", "137x47", "codex", action.rawValue])
+        }
+    }
+
+    func testInitialSizeRetriesOnlyAnOlderFrontendRejection() async throws {
+        for (stderr, stdout, timedOut, expectedCalls) in [
+            ("detach: unknown command: --terminal-size\n", "", false, 4),
+            ("provider startup failed", "", false, 3),
+            ("detach: unknown command: --terminal-size", "Started", false, 3),
+            ("detach: unknown command: --terminal-size", "", true, 3),
+        ] {
+            let cli = FakeCLI()
+            cli.responses["list --json"] = ok(line)
+            cli.responses["--terminal-size 137x47 codex resume --name detach-codex-p-1 --detach u1"] =
+                .success(CLIResult(exitCode: 1, stdout: stdout, stderr: stderr, timedOut: timedOut))
+            let store = SessionStore(cli: cli)
+            await store.refresh()
+            let error = await store.prepareInteractive(
+                .resume, on: try XCTUnwrap(store.sessions.first),
+                terminalSize: SessionTerminalSize(columns: 137, rows: 47))
+            XCTAssertEqual(cli.calls.count, expectedCalls)
+            if expectedCalls == 4 {
+                XCTAssertNil(error)
+                XCTAssertEqual(cli.calls[2],
+                    ["codex", "resume", "--name", "detach-codex-p-1", "--detach", "u1"])
+                XCTAssertEqual(cli.currentDirectories, Array(repeating:
+                    URL(fileURLWithPath: "/tmp/p", isDirectory: true), count: 2))
+            } else {
+                XCTAssertNotNil(error)
+            }
+        }
+    }
+
+    func testPrepareResumeKeepsTheSelectedClaudeSession() async throws {
+        let cli = FakeCLI()
+        cli.responses["list --json"] = ok(line.replacingOccurrences(of: "codex", with: "claude"))
+        let store = SessionStore(cli: cli)
+        await store.refresh()
+        let error = await store.prepareInteractive(.resume, on: try XCTUnwrap(store.sessions.first))
+        XCTAssertNil(error)
+        XCTAssertTrue(cli.calls.contains([
+            "claude", "resume", "--name", "detach-claude-p-1", "--detach", "u1",
+        ]))
+        XCTAssertFalse(cli.calls.contains { $0.first == "resume" })
+    }
+
+    func testPrepareResumeResolvesMissingLegacyProjectInsteadOfUsingAppDirectory() async throws {
+        for project in ["null", "\"relative/path\""] {
+            let cli = FakeCLI()
+            cli.responses["list --json"] = ok(line.replacingOccurrences(
+                of: #""project_dir":"/tmp/p""#, with: "\"project_dir\":\(project)"))
+            let store = SessionStore(cli: cli)
+            await store.refresh()
+            let error = await store.prepareInteractive(.resume, on: try XCTUnwrap(store.sessions.first))
+            XCTAssertNil(error)
+            XCTAssertTrue(cli.calls.contains(["resume", "--detach", "u1"]))
+            XCTAssertEqual(cli.currentDirectories.count, 1)
+            XCTAssertNil(cli.currentDirectories.first ?? nil)
+        }
+    }
+
     func testPrepareInteractiveReturnsTheBoundedCLIFailure() async throws {
         let cli = FakeCLI()
         let stopped = line.replacingOccurrences(
             of: #""effective_status":"running""#,
             with: #""effective_status":"stopped""#)
         cli.responses["list --json"] = ok(stopped)
-        cli.responses["resume --detach u1"] = .success(CLIResult(
+        cli.responses["codex resume --name detach-codex-p-1 --detach u1"] = .success(CLIResult(
             exitCode: 17,
             stdout: "",
             stderr: "resume refused",
@@ -725,7 +800,7 @@ final class SessionStoreTests: XCTestCase {
 
         let timeoutCLI = FakeCLI()
         timeoutCLI.responses["list --json"] = ok(line)
-        timeoutCLI.responses["resume --detach u1"] = .success(CLIResult(
+        timeoutCLI.responses["codex resume --name detach-codex-p-1 --detach u1"] = .success(CLIResult(
             exitCode: 124,
             stdout: "",
             stderr: "",
@@ -741,7 +816,7 @@ final class SessionStoreTests: XCTestCase {
 
         let failedCLI = FakeCLI()
         failedCLI.responses["list --json"] = ok(line)
-        failedCLI.responses["resume --detach u1"] = .failure(FakeError())
+        failedCLI.responses["codex resume --name detach-codex-p-1 --detach u1"] = .failure(FakeError())
         let failedStore = SessionStore(cli: failedCLI)
         await failedStore.refresh()
         let launchError = await failedStore.prepareInteractive(
@@ -778,7 +853,7 @@ final class SessionStoreTests: XCTestCase {
 
         let failureCLI = FakeCLI()
         failureCLI.responses["list --json"] = ok(line)
-        failureCLI.responses["resume --detach u1"] = .success(CLIResult(
+        failureCLI.responses["codex resume --name detach-codex-p-1 --detach u1"] = .success(CLIResult(
             exitCode: 23,
             stdout: "",
             stderr: " \n",

@@ -693,6 +693,14 @@ final class SessionAttachController: NSObject, LocalProcessTerminalViewDelegate 
         NSFont.monospacedSystemFont(ofSize: max(pointSize, 1), weight: .regular)
     }
 
+    @MainActor
+    static func initialSize(surfaceSize: CGSize, fontPointSize: CGFloat) -> SessionTerminalSize? {
+        guard surfaceSize.width > 0, surfaceSize.height > 0 else { return nil }
+        let view = LocalProcessTerminalView(frame: CGRect(origin: .zero, size: surfaceSize))
+        view.font = terminalFont(pointSize: fontPointSize)
+        return SessionTerminalSize(columns: view.terminal.cols, rows: view.terminal.rows)
+    }
+
     static func terminate(process: LocalProcess, timeout: TimeInterval = 1) {
         let pid = process.shellPid
         process.terminate()

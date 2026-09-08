@@ -5899,6 +5899,7 @@ start_tmux_session() {
   local pane_id=""
   local legacy_env_file
   local env_args=()
+  local window_args=( -d )
   local session_color
   local default_base
   local power_ready_file
@@ -6035,9 +6036,14 @@ start_tmux_session() {
 
   # A newly daemonized tmux server inherits the client's cwd for its lifetime.
   # Anchor it in persistent Detach state instead of a removable project mount.
+  if [ -n "${DETACH_INITIAL_TERMINAL_SIZE:-}" ]; then
+    [[ "$DETACH_INITIAL_TERMINAL_SIZE" =~ ^[1-9][0-9]{0,2}x[1-9][0-9]{0,2}$ ]] || \
+      die "invalid initial terminal size"
+    window_args+=( -x "${DETACH_INITIAL_TERMINAL_SIZE%x*}" -y "${DETACH_INITIAL_TERMINAL_SIZE#*x}" )
+  fi
   pane_id="$(
     cd -P "$INSTALL_STATE_ROOT" >/dev/null 2>&1 &&
-      "${TMUX_CMD[@]}" new-session -d -P -F '#{pane_id}' -s "$session" -c "$cwd" -n "$PROVIDER"
+      "${TMUX_CMD[@]}" new-session "${window_args[@]}" -P -F '#{pane_id}' -s "$session" -c "$cwd" -n "$PROVIDER"
   )" || \
     die "could not create tmux session"
   [ -n "$pane_id" ] || die "tmux did not return a pane id"
@@ -6107,7 +6113,7 @@ start_tmux_session() {
     -t "$pane_id" \
     -c "$cwd" \
     "${env_args[@]}" \
-    "$ENV_BIN" -C "$INSTALL_STATE_ROOT" \
+    "$ENV_BIN" -u DETACH_INITIAL_TERMINAL_SIZE -C "$INSTALL_STATE_ROOT" \
       "$SELF" __worker "$session" "$cwd" "$start_ms" "$run_token" "$agent_bin" "$@" || \
       die "could not start $PROVIDER_LABEL in tmux"
 

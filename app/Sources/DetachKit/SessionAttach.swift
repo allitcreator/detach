@@ -1,5 +1,19 @@
 import Foundation
 
+/// Initial detached window grid. Attached clients supply later dimensions.
+public struct SessionTerminalSize: Equatable, Sendable {
+    public let columns: Int
+    public let rows: Int
+
+    public init?(columns: Int, rows: Int) {
+        guard (1...999).contains(columns), (1...999).contains(rows) else { return nil }
+        self.columns = columns
+        self.rows = rows
+    }
+
+    public var arguments: [String] { ["--terminal-size", "\(columns)x\(rows)"] }
+}
+
 /// Public attach invocation for an in-app PTY client.
 ///
 /// The client must run `detach <provider> attach <session>` as argv. It must
@@ -26,8 +40,23 @@ public struct SessionAttachInvocation: Equatable, Sendable {
         session.isLive && session.availableActions.contains(.attach)
     }
 
-    public static func shouldEmbed(_ session: Session, clientActive: Bool) -> Bool {
-        clientActive && isEligible(session)
+    public static func shouldEmbed(
+        _ session: Session,
+        clientActive: Bool,
+        replacing previous: Session? = nil
+    ) -> Bool {
+        guard clientActive, isEligible(session) else { return false }
+        guard let previous else { return true }
+        guard session.id == previous.id else { return false }
+        if let oldRun = previous.lifecycleID, let newRun = session.lifecycleID {
+            return oldRun != newRun
+        }
+        // Older records have no lifecycle ID. A later creation timestamp can
+        // prove replacement; missing identity waits for command completion.
+        guard let oldDate = previous.createdAt, let newDate = session.createdAt else {
+            return false
+        }
+        return newDate > oldDate
     }
 
     public static func arguments(for session: Session) -> [String] {
