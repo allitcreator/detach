@@ -633,6 +633,84 @@ final class DetachStateCommandTests: XCTestCase {
         }
     }
 
+    func testHealthRevisionTracksLifecycleAndLocksButIgnoresRoutineFreshness() throws {
+        let root = temporaryDirectory.appendingPathComponent("sessions")
+        let session = "detach-codex-revision"
+        let directory = root.appendingPathComponent(session)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let metadata = directory.appendingPathComponent("meta.json")
+        _ = try DetachStateCommand.run(arguments: [
+            "meta", "create", metadata.path, "--integer", "schema", "1",
+            "--string", "session_name", session, "--string", "project_dir", "/tmp/project",
+            "--string", "status", "running", "--string", "run_token", "generation-a",
+        ])
+        let arguments = ["meta", "health-revision", root.path, temporaryDirectory.path]
+        func revision() throws -> Data { try DetachStateCommand.run(arguments: arguments) }
+        let initial = try revision()
+        _ = try DetachStateCommand.run(arguments: [
+            "meta", "patch", metadata.path,
+            "--integer", "worker_heartbeat_epoch", "123",
+            "--string", "last_checkpoint_at", "2026-09-08T12:00:00Z",
+        ])
+        XCTAssertEqual(try revision(), initial)
+        _ = try DetachStateCommand.run(arguments: [
+            "meta", "patch", metadata.path, "--string", "run_token", "generation-b",
+        ])
+        let replacement = try revision()
+        XCTAssertNotEqual(replacement, initial)
+        _ = try DetachStateCommand.run(arguments: [
+            "meta", "patch", metadata.path,
+            "--string", "runtime_shutdown_observed_at", "2026-09-08T12:00:01Z",
+        ])
+        let shutdown = try revision()
+        XCTAssertNotEqual(try revision(), replacement)
+        let lock = temporaryDirectory.appendingPathComponent("operation-" + session + ".lock")
+        let descriptor = open(lock.path, O_CREAT | O_RDWR | O_CLOEXEC, mode_t(0o600))
+        XCTAssertGreaterThanOrEqual(descriptor, 0)
+        defer { close(descriptor) }
+        XCTAssertEqual(try revision(), shutdown, "A lock file is not a held lock")
+        XCTAssertEqual(testMetadataFileLock(descriptor, LOCK_EX | LOCK_NB), 0)
+        XCTAssertNotEqual(try revision(), shutdown)
+        XCTAssertEqual(testMetadataFileLock(descriptor, LOCK_UN), 0)
+        XCTAssertEqual(try revision(), shutdown)
+        try FileManager.default.removeItem(at: lock)
+        try FileManager.default.createSymbolicLink(at: lock, withDestinationURL: metadata)
+        XCTAssertThrowsError(try revision())
+    }
+
+    func testListOperationLockClosesProvisionalFaultWithoutConcealingPersistentCollision() throws {
+        let lock = temporaryDirectory.appendingPathComponent("operation.lock")
+        let arguments = [
+            "health", "evaluate", "--metadata-valid", "true",
+            "--runtime-identity-expected", "true", "--meta-status", "stopped",
+            "--tmux", "foreign", "--run-token", "missing", "--worker", "dead",
+            "--provider-process", "dead", "--heartbeat", "missing",
+            "--checkpoint", "missing", "--checkpoint-recoverable", "false",
+            "--agent-session-known", "true", "--operation-lock", lock.path,
+        ]
+        func assessment() throws -> SessionHealthAssessment {
+            try JSONDecoder().decode(SessionHealthAssessment.self,
+                from: DetachStateCommand.run(arguments: arguments))
+        }
+        XCTAssertEqual(try assessment().effectiveStatus, .collision)
+        let descriptor = open(lock.path, O_CREAT | O_RDWR | O_CLOEXEC, mode_t(0o600))
+        XCTAssertGreaterThanOrEqual(descriptor, 0)
+        defer { close(descriptor) }
+        XCTAssertEqual(testMetadataFileLock(descriptor, LOCK_EX | LOCK_NB), 0)
+        let busy = try assessment()
+        XCTAssertEqual(busy.effectiveStatus, .starting)
+        XCTAssertEqual(busy.reason, .operationInProgress)
+        XCTAssertTrue(busy.actions.isEmpty)
+        XCTAssertFalse(busy.ownershipProven)
+        XCTAssertFalse(busy.cleanupEligible)
+        XCTAssertEqual(busy.reconcileAction, .none)
+        XCTAssertEqual(testMetadataFileLock(descriptor, LOCK_UN), 0)
+        XCTAssertEqual(try assessment().effectiveStatus, .collision)
+        try FileManager.default.removeItem(at: lock)
+        XCTAssertEqual(mkfifo(lock.path, mode_t(0o600)), 0)
+        XCTAssertThrowsError(try assessment())
+    }
+
     func testMetaSnapshotsBatchesFallbacksAndRejectsIncompleteInput() throws {
         let root = temporaryDirectory.appendingPathComponent("sessions", isDirectory: true)
         let first = root.appendingPathComponent("detach-codex-one", isDirectory: true)

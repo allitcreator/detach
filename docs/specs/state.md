@@ -27,13 +27,28 @@ runtime without managed tmux blocks mutations until its exact processes exit.
 Checkpoint metadata cannot replace it.
 
 `list --json` reads Codex and Claude concurrently and emits that order. Each
-uses one all-pane tmux snapshot and clock sample. `proc_pidinfo` reads recorded
+uses batched all-pane tmux snapshots and one clock sample per attempt. `proc_pidinfo` reads recorded
 PIDs and 64 parents. Empty tmux output is missing; wrong identity is collision.
-List compares process creation time with recorded runtime readiness. A process
+List and mutation eligibility compare process creation time with recorded runtime readiness. A process
 that started in a later second is a reused PID, not a surviving runtime.
 Missing readiness or creation time keeps the conservative identity result.
 Mutations recheck ownership, pane, run token, and process group. List jobs
 `exec` cores; cleanup signals PIDs.
+
+List buffers its output. Metadata health revisions and tmux identities must
+match before and after assessment. A revision includes metadata validity,
+source, generation, phase, process identity, shutdown evidence, and operation
+lock state. Routine heartbeat and checkpoint timestamps do not change it.
+List retries a changed observation up to three times. Continued changes fail
+the read without partial rows. Each stable attempt uses two tmux reads and a
+constant number of state helper processes, independent of the session count.
+
+List checks the BSD session operation lock without waiting or creating a
+file. While an operation holds the lock, provisional faults show actionless
+`starting` with reason `operation_in_progress`. A proven live pane can still
+offer Attach. List grants no mutation, reconcile, or cleanup action during the
+operation. Normal fault rules apply after lock release. Mutation preflight
+does not use this presentation rule.
 
 A retained dead pane is mutable only when its nonempty tmux token matches usable
 primary metadata. A checkpoint cannot authorize removal. Start, Resume,

@@ -249,6 +249,7 @@ enum SessionProcessHealthInspector {
 }
 
 public enum SessionHealthReason: String, Codable, Sendable {
+    case operationInProgress = "operation_in_progress"
     case healthy
     case finished
     case checkpointStale = "checkpoint_stale"

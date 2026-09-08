@@ -316,6 +316,12 @@ A stale heartbeat or old checkpoint is diagnostic information. It does not
 prove that an agent is hung. If the owned worker and provider are alive, Detach
 keeps the session running through a long provider turn.
 
+Start, Resume, and Recover can show **Starting** while the runtime identity is
+being configured. This transition does not mean the session has a problem.
+Mutation actions stay unavailable until the operation ends. Detach discards
+list results that combine different runtime generations. A reused PID does
+not block Resume when process creation time proves that the old runtime ended.
+
 If tmux disappears while a recorded process is still alive, Detach blocks
 Stop, Recover, Delete, and bulk cleanup until that exact runtime is gone. It
 never signals or removes foreign processes and unmanaged tmux sessions.
