@@ -2374,7 +2374,13 @@ materialize_selected_recovery_checkpoint() (
     esac
   fi
 
-  scavenge_checkpoint_stages "$session" "$session_path" || return 1
+  # A valid live source can repair an incomplete canonical checkpoint. Keep
+  # retained generations until that replacement is durably published; the
+  # normal scavenger correctly refuses to delete them before that point.
+  for source in "$session_path"/.checkpoint-stage-*; do
+    [ -e "$source" ] || [ -L "$source" ] || continue
+    owned_plain_checkpoint_directory "$source" || return 1
+  done
   stage_name=".checkpoint-stage-preserve-$stage_token-$$"
   checkpoint_stage_name_is_safe "$stage_name" || return 1
   stage="$session_path/$stage_name"
@@ -2492,7 +2498,8 @@ materialize_selected_recovery_checkpoint() (
     return 1
   fi
   remove_checkpoint_stage "$session_path" "$stage" || return 1
-  [ "$SYNC_ENABLED" = "0" ] || /bin/sync
+  [ "$SYNC_ENABLED" = "0" ] || /bin/sync || return 1
+  scavenge_checkpoint_stages "$session" "$session_path"
 )
 
 reset_checkpoint_generation() (

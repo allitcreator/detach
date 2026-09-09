@@ -67,6 +67,12 @@ conversations. Public operations reject symlinked or foreign-owned mutable
 roots before traversal. The checked Codex SQLite backup is never restored
 automatically.
 
+Recover can rebuild an incomplete checkpoint from a valid live journal even
+when an interrupted publication left staging directories. It validates those
+directories before staging. It removes retained generations only after the
+replacement checkpoint passes validation, atomic publication, and required
+writeback. A failure before publication preserves the retained generations.
+
 Bulk cleanup selects only fully scanned `stopped` or `orphaned` sessions.
 Before deletion, the app re-reads and matches the shown status and byte
 counts. The provider command waits up to 30 s for the checkpoint lock,

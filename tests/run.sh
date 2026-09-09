@@ -2485,6 +2485,10 @@ cp -Rp "$codex_session_dir" "$missing_backup_dir"
 "$STATE_HELPER" meta patch "$missing_backup_dir/checkpoint/meta.json" \
   --string session_name "$missing_backup_session" \
   --string display_name "$missing_backup_name"
+# An interrupted publication can retain an older complete generation. Recover
+# must preserve it until the valid live source has rebuilt canonical recovery.
+missing_backup_retained="$missing_backup_dir/.checkpoint-stage-retained-recovery"
+cp -Rp "$missing_backup_dir/checkpoint" "$missing_backup_retained"
 rm -f "$missing_backup_dir/checkpoint/rollout.jsonl"
 missing_backup_json="$(run_codex list --json | \
   grep -F "\"session_name\":\"$missing_backup_session\"")"
@@ -2494,9 +2498,46 @@ missing_backup_json="$(run_codex list --json | \
   "$STATE_HELPER" meta get /dev/stdin agent_session_id)" = "$expected_id" ]
 printf '%s' "$missing_backup_json" | \
   grep -F '"health_actions":["recover","delete"]' >/dev/null
+# Reject unsafe retained paths without touching the saved generation.
+missing_backup_unsafe="$missing_backup_dir/.checkpoint-stage-unsafe"
+missing_backup_retained_copy="$TMP_ROOT/retained-recovery-copy"
+cp -Rp "$missing_backup_retained" "$missing_backup_retained_copy"
+ln -s "$missing_backup_retained_copy" "$missing_backup_unsafe"
+if run_codex recover --detach "$missing_backup_name" \
+    >"$TMP_ROOT/unsafe-retained-recover.out" 2>&1; then
+  printf 'Recover accepted a symlinked retained checkpoint stage\n' >&2
+  exit 1
+fi
+[ -L "$missing_backup_unsafe" ]
+diff -qr "$missing_backup_retained_copy" "$missing_backup_retained" >/dev/null
+[ ! -e "$missing_backup_dir/checkpoint/rollout.jsonl" ]
+rm "$missing_backup_unsafe"
+# Force publication to fail after the live source was staged. Old retained
+# data must survive, and the next ordinary Recover must still succeed.
+missing_backup_state_wrapper="$TMP_ROOT/retained-recovery-state"
+missing_backup_exchange_attempt="$TMP_ROOT/retained-recovery-exchange-attempt"
+{
+  printf '#!/bin/bash\n'
+  printf 'if [ "$1:$2" = checkpoint:exchange ] && [ "$3" = %q ]; then\n' "$missing_backup_dir"
+  printf '  : >%q\n  exit 1\nfi\n' "$missing_backup_exchange_attempt"
+  printf 'exec %q "$@"\n' "$STATE_HELPER"
+} >"$missing_backup_state_wrapper"
+chmod 0700 "$missing_backup_state_wrapper"
+if DETACH_STATE_BIN="$missing_backup_state_wrapper" \
+    run_codex recover --detach "$missing_backup_name" \
+    >"$TMP_ROOT/retained-publication-failure.out" 2>&1; then
+  printf 'Recover accepted a failed checkpoint publication\n' >&2
+  exit 1
+fi
+[ -f "$missing_backup_exchange_attempt" ]
+diff -qr "$missing_backup_retained_copy" "$missing_backup_retained" >/dev/null
+[ ! -e "$missing_backup_dir/checkpoint/rollout.jsonl" ]
 export FAKE_CODEX_SLEEP=20
 run_codex recover --detach "$missing_backup_name"
 wait_for_tmux_option "$missing_backup_session" @detach_status running
+[ ! -e "$missing_backup_retained" ]
+"$STATE_HELPER" jsonl validate codex \
+  "$missing_backup_dir/checkpoint/rollout.jsonl" "$expected_id"
 require_file_line "$FAKE_CODEX_ARGS_FILE" resume
 require_file_line "$FAKE_CODEX_ARGS_FILE" "$expected_id"
 require_file_line "$FAKE_CODEX_ARGS_FILE" detach-recovery-model
