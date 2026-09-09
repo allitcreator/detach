@@ -197,10 +197,11 @@ shard verifies or builds the packaged app first. Each provider part has
 private state, socket, log, and failure
 artifact roots. Parts run concurrently. The bounded large-host Codex lane
 starts the longest measured independent parts first, and still runs every
-part. Smaller hosts use three Codex parts and two Claude parts; larger hosts
-use finer parts. Compact layouts reuse
-checkpoints across recovery and restart, resume and identity, or Claude
-lifecycle and recovery. The parent writes scenario events in one order and
+part. Smaller hosts use five Codex parts with at most three active parts and
+two Claude parts. Resume and Delete run in separate parts on every host.
+Larger hosts use finer parts. Compact layouts reuse checkpoints across
+recovery and restart or Claude lifecycle and recovery.
+The parent writes scenario events in one order and
 fails the stage when any part fails. Tests do not use installed product state
 or ambient helpers. Distribution runs its runtime and shell-profile contracts
 concurrently in separate private temporary homes.

@@ -78,6 +78,8 @@ Hosted CI is the merge-readiness authority.
   latency watch.
 - Gate contracts admit four heavy shards on eight CPUs and two on smaller
   hosts; light contracts stay concurrent and budgets expose overload.
+- Codex uses at most three active test parts. Resume and Delete use separate
+  parts on every host. Each suite section runs once in either layout.
 - Swift and release builds use separate caches and split at three CPUs;
   smaller hosts run in order. UI waits for app; metrics require both.
   Gate-contract excludes heavy peers and gates distribution. Release-workflow

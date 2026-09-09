@@ -32,24 +32,16 @@ case "$CODEX_TEST_PART" in
 esac
 
 codex_part_selected() {
-  [ "$CODEX_TEST_PART" = all ] || [ "$CODEX_TEST_PART" = "$1" ] || {
-    [ "$CODEX_TEST_PART" = preflight ] && {
-      [ "$1" = history ] || [ "$1" = configuration ]
-    } ||
-    [ "$CODEX_TEST_PART" = recovery ] && [ "$1" = restart ] ||
-    [ "$CODEX_TEST_PART" = guardrails ] && {
-      case "$1" in preflight|crash|history) return 0 ;; esac
-      return 1
-    } ||
-    [ "$CODEX_TEST_PART" = lifecycle-recovery ] && {
-      case "$1" in configuration|lifecycle|recovery|restart) return 0 ;; esac
-      return 1
-    } ||
-    [ "$CODEX_TEST_PART" = resume-identity ] && {
-      case "$1" in resume|identity|delete) return 0 ;; esac
-      return 1
-    }
-  }
+  [ "$CODEX_TEST_PART" != all ] && [ "$CODEX_TEST_PART" != "$1" ] || return 0
+  case "$CODEX_TEST_PART:$1" in
+    preflight:history|preflight:configuration|recovery:restart|\
+    guardrails:preflight|guardrails:crash|guardrails:history|\
+    lifecycle-recovery:configuration|lifecycle-recovery:lifecycle|\
+    lifecycle-recovery:recovery|lifecycle-recovery:restart|\
+    resume-identity:resume|resume-identity:identity|resume-identity:delete)
+      return 0 ;;
+  esac
+  return 1
 }
 
 codex_scenario_event() {
