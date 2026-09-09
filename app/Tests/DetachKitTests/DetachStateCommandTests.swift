@@ -216,6 +216,7 @@ final class DetachStateCommandTests: XCTestCase {
             ["meta", "snapshot", "only-path"],
             ["meta", "recovery-binding", "only-path"],
             ["meta", "snapshots"],
+            ["meta", "health-revision"],
             ["health", "session", "--"],
             ["health", "session", "no-separator"],
             ["health", "sessions"],
@@ -630,6 +631,134 @@ final class DetachStateCommandTests: XCTestCase {
             "meta", "recovery-binding", invalid.path, "detach-codex-project",
         ])) { error in
             XCTAssertEqual(error as? DetachStateCommandError, .unusableMetadata)
+        }
+    }
+
+    func testMetadataPatchRejectsRedirectedLockWithoutChangingState() throws {
+        let metadata = temporaryDirectory.appendingPathComponent("meta.json")
+        _ = try DetachStateCommand.run(arguments: [
+            "meta", "create", metadata.path, "--string", "status", "stopped",
+        ])
+        let before = try Data(contentsOf: metadata)
+        let target = temporaryDirectory.appendingPathComponent("unrelated")
+        let sentinel = Data("do not change".utf8)
+        try sentinel.write(to: target)
+        let lock = temporaryDirectory.appendingPathComponent(".meta-patch.lock")
+        try? FileManager.default.removeItem(at: lock)
+        try FileManager.default.createSymbolicLink(at: lock, withDestinationURL: target)
+        XCTAssertThrowsError(try DetachStateCommand.run(arguments: [
+            "meta", "patch", metadata.path, "--string", "status", "running",
+        ])) { error in
+            XCTAssertEqual((error as? CocoaError)?.code, .fileWriteNoPermission)
+        }
+        XCTAssertEqual(try Data(contentsOf: metadata), before)
+        XCTAssertEqual(try Data(contentsOf: target), sentinel)
+    }
+
+    func testHealthRevisionTracksLifecycleAndLocksButIgnoresRoutineFreshness() throws {
+        let root = temporaryDirectory.appendingPathComponent("sessions")
+        let session = "detach-codex-revision"
+        let directory = root.appendingPathComponent(session)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let metadata = directory.appendingPathComponent("meta.json")
+        _ = try DetachStateCommand.run(arguments: [
+            "meta", "create", metadata.path, "--integer", "schema", "1",
+            "--string", "session_name", session, "--string", "project_dir", "/tmp/project",
+            "--string", "status", "running", "--string", "run_token", "generation-a",
+        ])
+        let arguments = ["meta", "health-revision", root.path, temporaryDirectory.path]
+        func revision() throws -> Data { try DetachStateCommand.run(arguments: arguments) }
+        let initial = try revision()
+        _ = try DetachStateCommand.run(arguments: [
+            "meta", "patch", metadata.path,
+            "--integer", "worker_heartbeat_epoch", "123",
+            "--string", "last_checkpoint_at", "2026-09-08T12:00:00Z",
+        ])
+        XCTAssertEqual(try revision(), initial)
+        _ = try DetachStateCommand.run(arguments: [
+            "meta", "patch", metadata.path, "--string", "run_token", "generation-b",
+        ])
+        let replacement = try revision()
+        XCTAssertNotEqual(replacement, initial)
+        _ = try DetachStateCommand.run(arguments: [
+            "meta", "patch", metadata.path,
+            "--string", "runtime_shutdown_observed_at", "2026-09-08T12:00:01Z",
+        ])
+        let shutdown = try revision()
+        XCTAssertNotEqual(try revision(), replacement)
+        let lock = temporaryDirectory.appendingPathComponent("operation-" + session + ".lock")
+        let descriptor = open(lock.path, O_CREAT | O_RDWR | O_CLOEXEC, mode_t(0o600))
+        XCTAssertGreaterThanOrEqual(descriptor, 0)
+        defer { close(descriptor) }
+        XCTAssertEqual(try revision(), shutdown, "A lock file is not a held lock")
+        XCTAssertEqual(testMetadataFileLock(descriptor, LOCK_EX | LOCK_NB), 0)
+        XCTAssertNotEqual(try revision(), shutdown)
+        XCTAssertEqual(testMetadataFileLock(descriptor, LOCK_UN), 0)
+        XCTAssertEqual(try revision(), shutdown)
+        let checkpoint = directory.appendingPathComponent("checkpoint")
+        try FileManager.default.createDirectory(at: checkpoint, withIntermediateDirectories: false)
+        let published = try revision()
+        XCTAssertNotEqual(published, shutdown, "Checkpoint publication changes recovery eligibility")
+        try Data("cache receipt".utf8).write(to: checkpoint.appendingPathComponent("receipt"))
+        XCTAssertEqual(try revision(), published, "Receipt writes do not publish a checkpoint")
+        try FileManager.default.moveItem(at: checkpoint,
+            to: directory.appendingPathComponent("previous-checkpoint"))
+        try FileManager.default.createDirectory(at: checkpoint, withIntermediateDirectories: false)
+        XCTAssertNotEqual(try revision(), published, "Replacement must change the generation")
+        try FileManager.default.removeItem(at: lock)
+        try FileManager.default.createSymbolicLink(at: lock, withDestinationURL: metadata)
+        XCTAssertThrowsError(try revision())
+    }
+
+    func testListOperationLockClosesProvisionalFaultWithoutConcealingPersistentCollision() throws {
+        let lock = temporaryDirectory.appendingPathComponent("operation.lock")
+        var arguments = [
+            "health", "evaluate", "--metadata-valid", "true",
+            "--runtime-identity-expected", "true", "--meta-status", "stopped",
+            "--tmux", "foreign", "--run-token", "missing", "--worker", "dead",
+            "--provider-process", "dead", "--heartbeat", "missing",
+            "--checkpoint", "missing", "--checkpoint-recoverable", "false",
+            "--agent-session-known", "true", "--operation-lock", lock.path,
+        ]
+        func assessment() throws -> SessionHealthAssessment {
+            try JSONDecoder().decode(SessionHealthAssessment.self,
+                from: DetachStateCommand.run(arguments: arguments))
+        }
+        XCTAssertEqual(try assessment().effectiveStatus, .collision)
+        let descriptor = open(lock.path, O_CREAT | O_RDWR | O_CLOEXEC, mode_t(0o600))
+        XCTAssertGreaterThanOrEqual(descriptor, 0)
+        defer { close(descriptor) }
+        XCTAssertEqual(testMetadataFileLock(descriptor, LOCK_EX | LOCK_NB), 0)
+        let busy = try assessment()
+        XCTAssertEqual(busy.effectiveStatus, .starting)
+        XCTAssertEqual(busy.reason, .operationInProgress)
+        XCTAssertTrue(busy.actions.isEmpty)
+        XCTAssertFalse(busy.ownershipProven)
+        XCTAssertFalse(busy.cleanupEligible)
+        XCTAssertEqual(busy.reconcileAction, .none)
+        for (key, value) in [
+            ("--tmux", "live"), ("--run-token", "match"),
+            ("--worker", "alive"), ("--provider-process", "alive"),
+            ("--meta-status", "running"),
+        ] {
+            arguments[try XCTUnwrap(arguments.firstIndex(of: key)) + 1] = value
+        }
+        let attachable = try assessment()
+        XCTAssertEqual(attachable.effectiveStatus, .running)
+        XCTAssertTrue(attachable.ownershipProven)
+        XCTAssertEqual(attachable.actions, [.attach])
+        XCTAssertFalse(attachable.cleanupEligible)
+        XCTAssertEqual(attachable.reconcileAction, .none)
+        XCTAssertEqual(testMetadataFileLock(descriptor, LOCK_UN), 0)
+        XCTAssertEqual(try assessment().actions, [.attach, .stop])
+        arguments[try XCTUnwrap(arguments.firstIndex(of: "--tmux")) + 1] = "foreign"
+        XCTAssertEqual(try assessment().effectiveStatus, .collision)
+        try FileManager.default.removeItem(at: lock)
+        XCTAssertEqual(mkfifo(lock.path, mode_t(0o600)), 0)
+        XCTAssertThrowsError(try assessment())
+        arguments[try XCTUnwrap(arguments.firstIndex(of: "--operation-lock")) + 1] = "operation.lock"
+        XCTAssertThrowsError(try assessment()) { error in
+            XCTAssertEqual(error as? DetachStateCommandError, .invalidArguments)
         }
     }
 

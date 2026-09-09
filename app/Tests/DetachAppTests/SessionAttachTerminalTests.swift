@@ -1290,7 +1290,9 @@ final class SessionAttachTerminalTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         let record = root.appendingPathComponent("size")
         let executable = root.appendingPathComponent("detach")
-        try "#!/bin/sh\nstty size > '\(record.path)'\nexec /bin/cat\n"
+        // Publish the record only after stty finishes. File creation alone
+        // can wake the reader before the redirected command writes its data.
+        try "#!/bin/sh\nstty size > '\(record.path).tmp' && mv '\(record.path).tmp' '\(record.path)'\nexec /bin/cat\n"
             .write(to: executable, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755],
                                              ofItemAtPath: executable.path)

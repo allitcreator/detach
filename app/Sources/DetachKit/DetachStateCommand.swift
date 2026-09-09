@@ -1,3 +1,4 @@
+import CryptoKit
 import Darwin
 import Foundation
 
@@ -71,6 +72,8 @@ public enum DetachStateCommand {
             return try metaSnapshots(
                 Array(arguments.dropFirst(2)),
                 standardInput: injectedStandardInput)
+        case ("meta", "health-revision"):
+            return try metadataHealthRevision(Array(arguments.dropFirst(2)))
         case ("meta", "usable"):
             return try metaUsable(
                 Array(arguments.dropFirst(2)),
@@ -424,7 +427,7 @@ public enum DetachStateCommand {
         let allowed = required.union(processInspection).union([
             "--stop-requested", "--lifecycle-phase", "--uncommitted-replacement",
             "--runtime-quiescent",
-            "--runtime-ready-at",
+            "--runtime-ready-at", "--operation-lock",
         ])
         var values: [String: String] = [:]
         var index = 0
@@ -493,7 +496,8 @@ public enum DetachStateCommand {
         } else if !processInspection.isDisjoint(with: values.keys) {
             throw DetachStateCommandError.invalidArguments
         }
-        return SessionHealthEvaluator.evaluate(SessionHealthEvidence(
+        let operationBusy = try values["--operation-lock"].map(operationLockIsHeld) ?? false
+        var assessment = SessionHealthEvaluator.evaluate(SessionHealthEvidence(
             metadataValid: try boolean(metadataRaw),
             runtimeIdentityExpected: try boolean(identityExpectedRaw),
             metaStatus: status,
@@ -509,6 +513,48 @@ public enum DetachStateCommand {
             runtimeQuiescent: runtimeQuiescent,
             stopRequested: stopRequested,
             lifecyclePhase: lifecyclePhase))
+        if operationBusy {
+            // A session operation can expose its placeholder pane before its
+            // metadata and tmux identity are committed. It grants no mutation
+            // authority while that transaction still owns the kernel lock.
+            switch assessment.effectiveStatus {
+            case .hung, .corrupt, .collision, .recoverable, .orphaned, .unknown:
+                assessment.effectiveStatus = .starting
+                assessment.reason = .operationInProgress
+                assessment.ownershipProven = false
+                assessment.reconcileAction = .none
+                assessment.actions = []
+            default:
+                assessment.actions = assessment.actions.filter { $0 == .attach }
+                assessment.reconcileAction = .none
+            }
+            assessment.cleanupEligible = false
+        }
+        return assessment
+    }
+
+    private static func operationLockIsHeld(_ path: String) throws -> Bool {
+        guard path.hasPrefix("/") else {
+            throw DetachStateCommandError.invalidArguments
+        }
+        let descriptor = open(path, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC)
+        guard descriptor >= 0 else {
+            if errno == ENOENT { return false }
+            throw DetachStateCommandError.invalidArguments
+        }
+        defer { close(descriptor) }
+        var metadata = stat()
+        guard fstat(descriptor, &metadata) == 0,
+              isRegularFile(metadata), metadata.st_uid == geteuid() else {
+            throw DetachStateCommandError.invalidArguments
+        }
+        if metadataFileLock(descriptor, LOCK_SH | LOCK_NB) == 0 {
+            return false // close releases the nonblocking shared probe.
+        }
+        guard errno == EWOULDBLOCK else {
+            throw DetachStateCommandError.invalidArguments
+        }
+        return true
     }
 
     private static func maintenanceReconcile(
@@ -875,6 +921,55 @@ public enum DetachStateCommand {
         appendNULTerminated("", to: &output)
         appendNULTerminated("true", to: &output)
         return output
+    }
+
+    /// Health observations must not combine different lifecycle generations.
+    /// Routine heartbeat and checkpoint freshness updates do not change this
+    /// revision. No transcript reads or per-session helper processes are used.
+    private static func metadataHealthRevision(_ arguments: [String]) throws -> Data {
+        guard arguments.count == 2 else {
+            throw DetachStateCommandError.invalidArguments
+        }
+        let volatile = Set([
+            "worker_heartbeat_at", "worker_heartbeat_epoch",
+            "last_checkpoint_at", "last_checkpoint_epoch",
+        ])
+        var digest = SHA256()
+        try forEachMetadataSnapshot(at: arguments[0]) { session, values, source, directory in
+            var record = Data()
+            appendNULTerminated(session, to: &record)
+            appendNULTerminated(source?.rawValue ?? "invalid", to: &record)
+            for (field, value) in zip(metadataSnapshotFields, values ?? [])
+                where !volatile.contains(field.0) {
+                appendNULTerminated(value.map(render) ?? "", to: &record)
+            }
+            // Checkpoints are published by directory exchange. A newly
+            // published recovery generation can change Recover eligibility
+            // without changing the primary runtime generation or phase.
+            var checkpoint = stat()
+            if fstatat(directory, "checkpoint", &checkpoint, AT_SYMLINK_NOFOLLOW) == 0 {
+                appendNULTerminated(
+                    "\(checkpoint.st_dev):\(checkpoint.st_ino):\(checkpoint.st_mode):\(checkpoint.st_uid)",
+                    to: &record)
+            } else {
+                guard errno == ENOENT else { throw DetachStateCommandError.invalidArguments }
+                appendNULTerminated("no-checkpoint", to: &record)
+            }
+            // Shutdown evidence is also read by replacement quiescence checks.
+            if let data = readOwnedMetadataFile(in: directory, name: "meta.json"),
+               let values = try? SessionMetadataDocument.usableScalars(
+                in: data, expectedSessionName: session,
+                pathGroups: [["runtime_shutdown_observed_at"]]) {
+                for value in values {
+                    appendNULTerminated(value.map(render) ?? "", to: &record)
+                }
+            }
+            let busy = try operationLockIsHeld(
+                arguments[1] + "/operation-" + session + ".lock")
+            appendNULTerminated(busy ? "busy" : "idle", to: &record)
+            digest.update(data: record)
+        }
+        return Data((digest.finalize().map { String(format: "%02x", $0) }.joined() + "\n").utf8)
     }
 
     /// Batches the bounded transcript tail parse into the metadata helper.

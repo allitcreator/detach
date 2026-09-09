@@ -32,24 +32,16 @@ case "$CODEX_TEST_PART" in
 esac
 
 codex_part_selected() {
-  [ "$CODEX_TEST_PART" = all ] || [ "$CODEX_TEST_PART" = "$1" ] || {
-    [ "$CODEX_TEST_PART" = preflight ] && {
-      [ "$1" = history ] || [ "$1" = configuration ]
-    } ||
-    [ "$CODEX_TEST_PART" = recovery ] && [ "$1" = restart ] ||
-    [ "$CODEX_TEST_PART" = guardrails ] && {
-      case "$1" in preflight|crash|history) return 0 ;; esac
-      return 1
-    } ||
-    [ "$CODEX_TEST_PART" = lifecycle-recovery ] && {
-      case "$1" in configuration|lifecycle|recovery|restart) return 0 ;; esac
-      return 1
-    } ||
-    [ "$CODEX_TEST_PART" = resume-identity ] && {
-      case "$1" in resume|identity|delete) return 0 ;; esac
-      return 1
-    }
-  }
+  [ "$CODEX_TEST_PART" != all ] && [ "$CODEX_TEST_PART" != "$1" ] || return 0
+  case "$CODEX_TEST_PART:$1" in
+    preflight:history|preflight:configuration|recovery:restart|\
+    guardrails:preflight|guardrails:crash|guardrails:history|\
+    lifecycle-recovery:configuration|lifecycle-recovery:lifecycle|\
+    lifecycle-recovery:recovery|lifecycle-recovery:restart|\
+    resume-identity:resume|resume-identity:identity|resume-identity:delete)
+      return 0 ;;
+  esac
+  return 1
 }
 
 codex_scenario_event() {
@@ -2081,6 +2073,9 @@ if [ "$CODEX_TEST_PART" = all ] || \
   bootstrap_codex_checkpoint
 fi
 
+python3 "$ROOT/tests/runtime-state-consistency.py" \
+  "$SCRIPT" "$expected_id" "$SESSION" "$meta" "$STATE_HELPER" "$TMP_ROOT"
+
 # Explicit resume follows Codex semantics and accepts the exact thread UUID.
 export FAKE_CODEX_INIT_DELAY=0
 export FAKE_CODEX_SLEEP=1
@@ -2389,7 +2384,7 @@ if [ "$(printf '%s' "$held_resume_json" | \
      "$STATE_HELPER" meta get /dev/stdin effective_status 2>/dev/null || true)" != \
      starting ] || \
    ! printf '%s' "$held_resume_json" | \
-     grep -F '"health_actions":["attach","stop"]' >/dev/null; then
+     grep -F '"health_actions":["attach"]' >/dev/null; then
   : >"$FAKE_POWER_FAIL_RELEASE_FILE"
   wait "$failed_resume_pid" || true
   printf 'Codex list exposed recovery while replacement B was still starting: %s\n' \
@@ -4108,12 +4103,12 @@ DETACH_TMUX_SOCKET_PATH="$SOCKET_PATH" \
 list_scale_elapsed="$SECONDS"
 [ "$(wc -l <"$list_scale_output" | tr -d '[:space:]')" = 25 ]
 [ "$(grep -Fc '"model":"gpt-scale"' "$list_scale_output")" = 25 ]
-[ "$(wc -l <"$list_scale_invocations" | tr -d '[:space:]')" -le 5 ] || {
+[ "$(wc -l <"$list_scale_invocations" | tr -d '[:space:]')" -le 7 ] || {
   printf 'list restored per-field state helper fan-out\n' >&2
   exit 1
 }
-[ "$(wc -l <"$list_scale_tmux_invocations" | tr -d '[:space:]')" = 1 ] || {
-  printf 'list did not use one batched tmux snapshot\n' >&2
+[ "$(wc -l <"$list_scale_tmux_invocations" | tr -d '[:space:]')" = 2 ] || {
+  printf 'list did not validate its batched tmux snapshot\n' >&2
   exit 1
 }
 [ "$(find "$list_scale_root/sessions" -name .transcript-summary-cache.json -type f | \
@@ -4137,8 +4132,8 @@ DETACH_TMUX_SOCKET_PATH="$SOCKET_PATH" \
   "$SCRIPT" codex list --json >"$list_scale_output"
 list_scale_hot_elapsed="$SECONDS"
 [ "$(wc -l <"$list_scale_output" | tr -d '[:space:]')" = 25 ]
-[ "$(wc -l <"$list_scale_invocations" | tr -d '[:space:]')" -le 5 ]
-[ "$(wc -l <"$list_scale_tmux_invocations" | tr -d '[:space:]')" = 1 ]
+[ "$(wc -l <"$list_scale_invocations" | tr -d '[:space:]')" -le 7 ]
+[ "$(wc -l <"$list_scale_tmux_invocations" | tr -d '[:space:]')" = 2 ]
 [ "$list_scale_hot_elapsed" -lt 5 ] || {
   printf 'cached 25-session list exceeded the app deadline: %ss\n' \
     "$list_scale_hot_elapsed" >&2

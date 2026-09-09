@@ -1167,7 +1167,7 @@ if [ "$(printf '%s' "$held_resume_json" | \
      "$STATE_HELPER" meta get /dev/stdin effective_status 2>/dev/null || true)" != \
      starting ] || \
    ! printf '%s' "$held_resume_json" | \
-     grep -F '"health_actions":["attach","stop"]' >/dev/null; then
+     grep -F '"health_actions":["attach"]' >/dev/null; then
   : >"$FAKE_POWER_FAIL_RELEASE_FILE"
   wait "$failed_resume_pid" || true
   printf 'Claude list exposed recovery while replacement B was still starting: %s\n' \

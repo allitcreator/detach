@@ -33,6 +33,11 @@ checkpoints, and protection survive its last window. ⌘Q and Quit end the app.
 After a transcript file is replaced, registration of its new file observer
 emits a refresh hint. Writes before registration must not leave the UI stale.
 
+An active session operation can report `operation_in_progress` while it sets
+up its runtime identity. This is a starting state with no mutation actions.
+It is not a Problems row. A failed or completed operation restores the normal
+typed health rules. A failed coherent List read keeps the previous rows.
+
 The dashboard separates identity, status, and Mac Power. Identity is a thin
 tmux-colored capsule. Status is a filled circle. Power uses a neutral surface
 and semantic color. Clicking the UUID chip copies the full UUID and shows

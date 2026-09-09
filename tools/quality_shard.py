@@ -139,6 +139,7 @@ def shard_plan(plan: dict[str, object]) -> list[dict[str, object]]:
                 "stages": ",".join(stages),
                 "level": level,
                 "needs_app": needs_app,
+                "builds_app": "app" in stages,
                 "needs_cache": needs_cache,
                 "needs_runtime": needs_runtime,
                 "needs_metrics": needs_metrics,

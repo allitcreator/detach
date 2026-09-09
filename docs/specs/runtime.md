@@ -50,6 +50,9 @@ Core self-reinvokes critical mutations under `lockf`. Start, Resume, Stop,
 Recover, and Delete hold a session lock before install, project, and checkpoint
 locks. Each lock covers the child; the install lock covers readiness and the
 worst hold.
+List observes held session locks. It does not classify a placeholder pane as
+a persistent fault while Start, Resume, or Recover configures its identity.
+This observation never authorizes a mutation or suppresses a command error.
 
 ### Session lifecycle and tmux
 

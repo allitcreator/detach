@@ -990,8 +990,8 @@ tmux_health_snapshot() {
   case "$pane_pid" in ''|*[!0-9]*) TMUX_HEALTH_PANE_PID="" ;; *) TMUX_HEALTH_PANE_PID="$pane_pid" ;; esac
 }
 
-# A read-only list needs one internally consistent tmux generation, not one
-# client process per saved session. Mutations never set this cache and keep
+# A read-only list batches all panes. Its publication check repeats the read
+# to reject mixed lifecycle generations. Mutations never set this cache and keep
 # their exact target revalidation immediately before every signal or change.
 prepare_list_tmux_health_snapshot() {
   local format
@@ -1001,6 +1001,15 @@ prepare_list_tmux_health_snapshot() {
     "${TMUX_CMD[@]}" list-panes -a -F "$format" 2>/dev/null || true
   )"
   LIST_TMUX_HEALTH_READY=1
+}
+
+list_tmux_health_identity() {
+  local session marker provider token heartbeat rest
+  while IFS='|' read -r session marker provider token heartbeat rest; do
+    [ -n "$session" ] || continue
+    # Heartbeat changes are routine freshness updates, not a new runtime.
+    printf '%s|%s|%s|%s|%s\n' "$session" "$marker" "$provider" "$token" "$rest"
+  done <<<"$LIST_TMUX_HEALTH_ROWS"
 }
 
 tmux_health_snapshot_from_list() {
@@ -1586,7 +1595,7 @@ tmux_refresh_extended_keys() {
 # ordinary emacs/vi/custom copy-mode bindings return without a server restart.
 # Punctuation is escaped only for tmux's configuration parser.
 tmux_emit_type_through_config() {
-  local table fallback_table code char key cp b1 b2 utf
+  local table fallback_table code char key cp b1 b2 utf octal b1_octal b2_octal
 
   for table in copy-mode copy-mode-vi; do
     fallback_table="detach-$table-original"
@@ -1594,7 +1603,8 @@ tmux_emit_type_through_config() {
     # copy-mode shortcut for consistent type-through only while managed mouse
     # input is enabled.
     for ((code = 33; code <= 126; code++)); do
-      char="$(printf "\\$(printf '%03o' "$code")")"
+      printf -v octal '%03o' "$code"
+      printf -v char '%b' "\\$octal"
       case "$char" in
         [A-Za-z0-9]) key="$char" ;;
         *) key="\\$char" ;;
@@ -1606,10 +1616,12 @@ tmux_emit_type_through_config() {
       "$table" "$fallback_table"
     # Cyrillic А-Я, а-я, Ё, ё delivered as literal UTF-8; multibyte keys never
     # collide with tmux's ASCII syntax, so they need no escaping.
-    for cp in $(seq 1040 1103) 1025 1105; do
+    for cp in {1040..1103} 1025 1105; do
       b1=$(( 0xC0 | (cp >> 6) ))
       b2=$(( 0x80 | (cp & 0x3F) ))
-      utf="$(printf "\\$(printf '%03o' "$b1")\\$(printf '%03o' "$b2")")"
+      printf -v b1_octal '%03o' "$b1"
+      printf -v b2_octal '%03o' "$b2"
+      printf -v utf '%b' "\\$b1_octal\\$b2_octal"
       printf 'bind-key -T %s %s if-shell -F "#{==:#{@detach_copy_type_through},1}" "send-keys -X cancel ; send-keys" "switch-client -T %s ; send-keys -K"\n' \
         "$table" "$utf" "$fallback_table"
     done
@@ -6911,41 +6923,7 @@ session_health_envelope() {
     fi
   fi
 
-  # The batched list helper reads only the recorded PIDs with proc_pidinfo.
-  # State-changing and single-session paths keep the established shell checks.
-  if [ "$output_mode" != "request" ]; then
-    case "$worker_pid" in
-      ''|*[!0-9]*) worker_state="unknown" ;;
-      *)
-        if process_is_owned_alive "$worker_pid"; then
-          worker_state="alive"
-        else
-          worker_state="dead"
-        fi
-        ;;
-    esac
-    case "$provider_pid" in
-      ''|*[!0-9]*) provider_state="unknown" ;;
-      *)
-        process_is_owned_alive "$provider_pid" || provider_state="dead"
-        if [ "$provider_state" = "dead" ]; then
-          :
-        elif [ "$worker_state" = "alive" ] && \
-             process_is_descendant "$provider_pid" "$worker_pid"; then
-          provider_state="alive"
-        else
-          provider_state="mismatch"
-        fi
-        ;;
-    esac
-  fi
-
   if [ "$tmux_state" = "live" ]; then
-    if [ "$output_mode" != "request" ] && \
-       [ "$worker_state" = "alive" ] && [ "$pane_pid" != "$worker_pid" ]; then
-      worker_state="mismatch"
-      provider_state="mismatch"
-    fi
     if [ "$token_state" = "match" ]; then
       case "$tmux_heartbeat_epoch" in
         ''|*[!0-9]*) ;;
@@ -6985,14 +6963,17 @@ session_health_envelope() {
     --stop-requested "$stop_requested"
     --lifecycle-phase "$lifecycle_phase"
   )
-  if [ "$output_mode" = "request" ]; then
-    health_args+=(
-      --inspect-processes true
-      --worker-pid "${worker_pid:--}"
-      --provider-pid "${provider_pid:--}"
-      --pane-pid "${pane_pid:--}"
-      --runtime-ready-at "${runtime_ready_at:--}"
-    )
+  # List and mutation eligibility must use the same kernel identity evidence.
+  # A PID created after runtime readiness belongs to another process.
+  health_args+=(
+    --inspect-processes true
+    --worker-pid "${worker_pid:--}"
+    --provider-pid "${provider_pid:--}"
+    --pane-pid "${pane_pid:--}"
+    --runtime-ready-at "${runtime_ready_at:--}"
+  )
+  if [ "$output_mode" = request ] || [ "$output_mode" = list-assessment ]; then
+    health_args+=( --operation-lock "$(operation_lock_path "$session")" )
   fi
   case "$output_mode" in
     session)
@@ -7002,7 +6983,7 @@ session_health_envelope() {
       local request_args=( "${health_args[@]}" -- "$@" )
       printf '%s\0' "${#request_args[@]}" "${request_args[@]}"
       ;;
-    assessment)
+    assessment|list-assessment)
       "$STATE_BIN" health evaluate "${health_args[@]}" --envelope
       ;;
     *) return 1 ;;
@@ -7185,7 +7166,6 @@ list_session_records() {
   local LIST_HEALTH_NOW
 
   ensure_state_dirs
-  prepare_list_tmux_health_snapshot
   LIST_HEALTH_NOW="$(date '+%s')"
   if [ "$PROVIDER" = codex ] && [ "$json_mode" = 1 ]; then
     model_database="$(codex_state_db 2>/dev/null || true)"
@@ -7273,7 +7253,7 @@ list_session_records() {
       else
         health_output="$(session_health_envelope \
           "$session" false unknown "-" "" "" "" "" "" "" \
-          assessment "" "" "" "")" || \
+          list-assessment "" "" "" "")" || \
           die "could not evaluate health for '$session'"
       fi
       if [ "$json_mode" = "1" ]; then
@@ -7387,7 +7367,7 @@ list_session_records() {
       health_output="$(session_health_envelope \
         "$session" true "$health_status" "$health_id" "$health_run_token" \
         "$worker_pid" "$provider_pid" "$health_worker_heartbeat_epoch" \
-        "$health_last_checkpoint_epoch" "$health_schema" assessment \
+        "$health_last_checkpoint_epoch" "$health_schema" list-assessment \
         "$health_stop_requested_at" "$health_lifecycle_phase" \
         "$health_preserve_recovery_until_ready" "$health_runtime_ready_at")" || \
         die "could not evaluate health for '$session'"
@@ -7410,12 +7390,29 @@ list_session_records() {
 
 list_sessions() {
   local json_mode="${1:-0}"
+  local attempt=0 before after tmux_before candidate
+  local LIST_TMUX_HEALTH_READY=0 LIST_TMUX_HEALTH_ROWS=""
 
-  if [ "$json_mode" = "1" ]; then
-    list_session_records 1 | "$STATE_BIN" health sessions /dev/stdin
-  else
-    list_session_records 0
-  fi
+  ensure_state_dirs
+  while [ "$attempt" -lt 3 ]; do
+    attempt=$((attempt + 1))
+    before="$("$STATE_BIN" meta health-revision "$SESSIONS_ROOT" "$LOCKS_ROOT")" || return 1
+    prepare_list_tmux_health_snapshot
+    tmux_before="$(list_tmux_health_identity)"
+    if [ "$json_mode" = "1" ]; then
+      candidate="$(list_session_records 1 | "$STATE_BIN" health sessions /dev/stdin)" || return 1
+    else
+      candidate="$(list_session_records 0)" || return 1
+    fi
+    prepare_list_tmux_health_snapshot
+    after="$("$STATE_BIN" meta health-revision "$SESSIONS_ROOT" "$LOCKS_ROOT")" || return 1
+    if [ "$before" = "$after" ] && \
+       [ "$tmux_before" = "$(list_tmux_health_identity)" ]; then
+      [ -z "$candidate" ] || printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  die "session state changed during all three list attempts; retry the snapshot"
 }
 
 show_status() {
