@@ -1497,6 +1497,10 @@ tmux -L "$SOCKET" has-session -t "=$SESSION"
 tmux -L "$OUTER_SOCKET" has-session -t "=$outer_session"
 tmux -L "$OUTER_SOCKET" kill-server >/dev/null 2>&1 || true
 
+# Два public attach на разных PTY проверяют window-size latest и закрытие UI.
+python3 "$ROOT/tests/terminal_client_geometry.py" \
+  "$TMUX_TEST_BIN" "$SOCKET_PATH" "$DETACH" "$SESSION"
+
 # SwiftTerm closes the in-app attach client with SIGTERM. Attach through the
 # public CLI on a real PTY, terminate that client, and prove the managed
 # session, worker, and provider survive. A second tmux server owns the test
