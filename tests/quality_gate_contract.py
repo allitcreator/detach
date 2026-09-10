@@ -6,6 +6,8 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import re
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -301,9 +303,11 @@ class QualityGateContract(unittest.TestCase):
                     0,
                 )
             for part in (
+                "resume",
+                "delete",
                 "guardrails",
                 "lifecycle-recovery",
-                "resume-identity",
+                "identity",
             ):
                 log = (run_dir / f"codex-parts/{part}.log").read_text(
                     encoding="utf-8"
@@ -335,6 +339,33 @@ class QualityGateContract(unittest.TestCase):
                         "identity",
                     ),
                 )
+
+    def test_codex_layouts_select_every_suite_section_once(self) -> None:
+        # Execute the real shell selector without starting the integration suite.
+        # Scheduling must not lose sections or repeat stateful scenarios.
+        source = (ROOT / "tests/run.sh").read_text(encoding="utf-8")
+        selector = source.split("codex_part_selected() {", 1)[1].split(
+            "codex_scenario_event()", 1
+        )[0]
+        sections = re.findall(r"^if codex_part_selected ([a-z-]+); then$", source, re.MULTILINE)
+        self.assertTrue(sections)
+        self.assertEqual(len(sections), len(set(sections)))
+        command = "codex_part_selected() {" + selector + "\n" + (
+            'CODEX_TEST_PART="$1"; shift\n'
+            'for section in "$@"; do\n'
+            '  if codex_part_selected "$section"; then printf "%s\\n" "$section"; fi\n'
+            'done\n'
+        )
+        for cpus in (3, 10):
+            with self.subTest(cpus=cpus), patch("quality_gate.os.cpu_count", return_value=cpus):
+                selected = []
+                for part in provider_test_parts("codex"):
+                    result = subprocess.run(
+                        ["/bin/bash", "-c", command, "selector", part, *sections],
+                        text=True, capture_output=True, check=True,
+                    )
+                    selected.extend(result.stdout.splitlines())
+                self.assertCountEqual(selected, sections)
 
     def test_static_contracts_keep_separate_deterministic_logs(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

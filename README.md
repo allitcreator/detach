@@ -132,6 +132,8 @@ The embedded terminal keeps the shortcuts that matter:
 | Open the standard New session sheet | `Cmd-N` |
 | Start a Quick chat immediately | `Cmd-T` |
 | Switch to a numbered Working or Answer ready session | `Cmd-1` … `Cmd-9` |
+| Copy selected text | `Cmd-C` |
+| Open a link | Click the link |
 | Paste text | `Cmd-V` |
 | Give Codex or Claude Code an image from the clipboard | `Ctrl-V` |
 | Interrupt a command or close a provider overlay | `Ctrl-C` |
@@ -142,6 +144,12 @@ The embedded terminal keeps the shortcuts that matter:
 | Replace an exited terminal client without restarting the agent | **Reconnect** |
 
 Prompt jumping stays local to the terminal viewport and requires OSC 133 marks.
+
+With managed mouse input, tmux copies the selection when you release the
+mouse button. `Cmd-C` keeps that copy when there is no native selection.
+Links show an underline on hover. Click an underlined link to open it.
+Copies preserve Unicode text. `Cmd-V` leaves managed copy mode and inserts
+the text at the live prompt, including line breaks.
 
 Settings → General selects the provider and parent folder for Quick chat. The
 default is `/tmp`. Each `Cmd-T` creates a private
@@ -160,13 +168,20 @@ Start, Resume, and Recover run inside Detach and do not require an outer
 terminal. The selected external terminal remains available as a fallback for
 Attach, Resume, and Recover.
 
+Resume and Recover show the new terminal as soon as the session can accept an
+attachment. Startup checks continue, and Detach reports any startup error.
+With the current CLI, the provider receives the visible terminal size before
+its first output.
+
 The live terminal processes PTY input and output as events. Its stable
 CoreGraphics renderer repaints only when content changes. A steady cursor
 avoids an idle redraw timer. Switching between live sessions keeps the same
-terminal and PTY. tmux synchronized output replaces the complete frame at once.
+terminal and PTY. The first attach waits for the visible terminal size. A
+selection change during attachment waits for the tmux client to become ready.
+tmux synchronized output replaces the complete frame at once.
 
 Detach preloads the last text screen for up to nine live sessions in a small
-bounded burst. A cold attachment can show that text until its first frame. It
+bounded burst. A cold attachment can show that text for up to one second. It
 does not keep hidden PTYs alive or use raster snapshots during live switching.
 
 Detach preloads recent non-live session logs in a bounded startup burst. This
@@ -225,8 +240,9 @@ A compact guide below the session list keeps `Cmd-N`, `Cmd-T`, `Cmd-,`, and
 
 Sessions that wait for your reply move into **Answer ready**, before agents
 that are still working. Detach reads structured provider lifecycle records for
-this signal. It does not guess from terminal text. Mid-turn permission prompts
-are not currently part of the signal.
+this signal. A completed Claude text answer enters **Answer ready** even when
+Claude omits its turn-duration record. Detach does not guess from terminal
+text. Mid-turn permission prompts are not currently part of the signal.
 
 The optional menu bar companion shows:
 
@@ -304,6 +320,12 @@ Detach evaluates health from independent facts:
 A stale heartbeat or old checkpoint is diagnostic information. It does not
 prove that an agent is hung. If the owned worker and provider are alive, Detach
 keeps the session running through a long provider turn.
+
+Start, Resume, and Recover can show **Starting** while the runtime identity is
+being configured. This transition does not mean the session has a problem.
+Mutation actions stay unavailable until the operation ends. Detach discards
+list results that combine different runtime generations. A reused PID does
+not block Resume when process creation time proves that the old runtime ended.
 
 If tmux disappears while a recorded process is still alive, Detach blocks
 Stop, Recover, Delete, and bulk cleanup until that exact runtime is gone. It
@@ -579,7 +601,9 @@ Inside managed tmux, the mouse wheel scrolls one line at a time. Mouse selection
 copies to the macOS clipboard and keeps the highlight and scroll position. When
 managed mouse input is on, an ASCII or Cyrillic printable key, Space, Enter, or
 Backspace leaves copy mode and sends that key to the live prompt. Arrows, page
-navigation, Escape, and control chords keep their copy-mode behavior. Use
+navigation, Escape, and bound control chords keep their copy-mode behavior.
+Other unbound input, including bracketed paste, returns to the live prompt.
+Use
 `detach config tmux-mouse off` to restore the original copy-mode key tables and
 return mouse handling to the terminal emulator. In Terminal.app, Option-drag
 also bypasses tmux selection.

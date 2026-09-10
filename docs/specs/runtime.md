@@ -50,6 +50,9 @@ Core self-reinvokes critical mutations under `lockf`. Start, Resume, Stop,
 Recover, and Delete hold a session lock before install, project, and checkpoint
 locks. Each lock covers the child; the install lock covers readiness and the
 worst hold.
+List observes held session locks. It does not classify a placeholder pane as
+a persistent fault while Start, Resume, or Recover configures its identity.
+This observation never authorizes a mutation or suppresses a command error.
 
 ### Session lifecycle and tmux
 
@@ -72,6 +75,12 @@ payload switch. Each worker starts from stable install state, then enters its
 canonical project beneath the cleanup trap.
 
 Tmux environment arguments stay in memory; credentials never touch disk.
+
+The public `--terminal-size COLSxROWS` prefix accepts dimensions from 1 to 999
+for explicit Start, Resume, and Recover commands. It sets the initial detached
+window size before the provider starts. The hint crosses startup locks in
+memory. It is not saved with provider options or copied into the provider
+environment. Attached clients still control subsequent terminal dimensions.
 
 When the provider pane dies, tmux detaches its clients. External terminals
 return to their original shell.
@@ -140,7 +149,11 @@ secondary.
 Managed input changes only the private server. `tmux-mouse` defaults on: wheel
 steps are one line; selection copies without clearing, exiting, or snapping;
 click clears it. ASCII/Cyrillic text, Space, Enter, and BSpace exit
-copy-mode and reach the pane while navigation/control keys stay. Off restores
+copy-mode and reach the pane while bound navigation/control keys stay.
+Unbound input, including bracketed paste, also leaves managed copy mode.
+Paste preserves its UTF-8 bytes and the provider's paste framing. The copy
+command reads UTF-8 regardless of the server locale. Attach updates older
+managed input bindings without replacing their saved original tables. Off restores
 the original copy tables immediately.
 
 `tmux-extended-keys` defaults on and maps recognized `S-Enter` to stable

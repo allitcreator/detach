@@ -33,6 +33,11 @@ checkpoints, and protection survive its last window. ⌘Q and Quit end the app.
 After a transcript file is replaced, registration of its new file observer
 emits a refresh hint. Writes before registration must not leave the UI stale.
 
+An active session operation can report `operation_in_progress` while it sets
+up its runtime identity. This is a starting state with no mutation actions.
+It is not a Problems row. A failed or completed operation restores the normal
+typed health rules. A failed coherent List read keeps the previous rows.
+
 The dashboard separates identity, status, and Mac Power. Identity is a thin
 tmux-colored capsule. Status is a filled circle. Power uses a neutral surface
 and semantic color. Clicking the UUID chip copies the full UUID and shows
@@ -46,6 +51,21 @@ keeps sheet errors, and selects the new session. Start, Resume, and Recover open
 `detach <provider> attach --terminal-features sync <session>` in one visible
 PTY. Live-to-live selection keeps it and asks the public CLI to switch its exact
 tmux client. Closing the view ends the client.
+The PTY starts after the terminal has a window and a nonzero size. Selection
+changes during cold attach wait for the first tmux frame before client lookup.
+The latest selected session wins. A removed host cannot start a delayed PTY.
+Resume uses the selected project, provider, managed name, and provider UUID.
+If the project is missing, the public UUID resolver finds it. Resume and
+Recover can open the terminal from a fresh attachable snapshot of the new run
+before the command completes. The lifecycle ID must change, or a legacy row
+must have a later creation time. An old or unidentified run waits for command
+completion. An exited early client does not reconnect during preparation.
+The preparation command still reports readiness failures.
+Resume and Recover pass the visible terminal size before the provider starts.
+The app measures this size with the terminal font and SwiftTerm layout. This
+prevents initial output from wrapping at the default detached window width.
+If an older CLI rejects the size prefix before startup, the app retries without
+the hint. No startup failure or timeout permits this retry.
 
 Terminal I/O is event-driven. CoreGraphics repaints on changes and uses a
 steady cursor. No terminal poller or frame loop runs. `Command-C/V/F` provide
@@ -53,11 +73,20 @@ native copy, paste, and find. `Ctrl-C` and `Ctrl-V` reach providers as
 conventional control bytes. `Command-Left/Right` send `Ctrl-A/E`, and
 `Command-Backspace` sends `Ctrl-U`, regardless of enhanced keyboard mode.
 `Command-Up/Down` move the local viewport between OSC 133 prompt origins and
-do nothing when no origin exists; they never send shell-history keys. A Finder
-drop sends shell-safe paths without reading files. `Shift-Return` sends tmux's
-stable CSI-u `S-Enter` input regardless of enhanced keyboard mode; the managed
-tmux toggle maps it to multiline input or ordinary Return. Live views move Mac
-Power to metadata. An exited client offers Reconnect.
+do nothing when no origin exists; they never send shell-history keys.
+`Shift-Return` sends tmux's stable CSI-u `S-Enter` input regardless of enhanced
+keyboard mode; the managed tmux toggle maps it to multiline input or ordinary
+Return. Handled presses suppress their paired releases across autorepeat and
+focus changes.
+An empty native selection cannot clear the clipboard; tmux copies its mouse
+selection on release. Explicit and detected links show an underline on hover
+and open on a plain click. A selection drag does not open a link. A Finder drop
+sends shell-safe paths without reading files. Live views move Mac Power to
+metadata. An exited client offers Reconnect.
+
+The embedded attach client always uses a UTF-8 character locale. A conflicting
+inherited locale cannot change how tmux encodes its output. Native paste sends
+Unicode text and line breaks with the provider's bracketed paste framing.
 
 Cold start paints at most 128 rows and 1 MiB from private preferences. Cached
 rows grant no action, ownership, PID, cleanup, or power claim until a fresh

@@ -6,6 +6,21 @@ import SwiftTerm
 import DetachKit
 @testable import DetachApp
 
+private final class MouseRecordingTerminalView: SessionAttachLocalProcessTerminalView {
+    var sent: [UInt8] = []
+    var opened: [String] = []
+
+    override func send(source: TerminalView, data: ArraySlice<UInt8>) {
+        sent.append(contentsOf: data)
+    }
+
+    override func requestOpenLink(
+        source: TerminalView, link: String, params: [String: String]
+    ) {
+        opened.append(link)
+    }
+}
+
 private final class SilentDetachCLI: DetachCLIRunning, @unchecked Sendable {
     func run(arguments: [String], timeout: TimeInterval) async throws -> CLIResult {
         CLIResult(exitCode: 0, stdout: "", stderr: "", timedOut: false)
@@ -399,6 +414,42 @@ final class SessionAttachTerminalTests: XCTestCase {
             detachPath: "/tmp/detach",
             terminalScreens: SessionTerminalScreenCache(),
             cachedLog: cache.poller(for: session)).body
+    }
+
+    @MainActor
+    func testSelectionDuringSlowAttachWaitsForClientFrameAndKeepsLatestTarget() async throws {
+        let source = try XCTUnwrap(Self.session(name: "detach-codex-source"))
+        let skipped = try XCTUnwrap(Self.session(name: "detach-codex-skipped"))
+        let target = try XCTUnwrap(Self.session(name: "detach-codex-target"))
+        let terminal = SessionAttachLocalProcessTerminalView(
+            frame: NSRect(x: 0, y: 0, width: 640, height: 360))
+        let controller = SessionAttachController(invocation: Self.invocation())
+        controller.configure(terminal, fontPointSize: 13)
+        // A running child is initially the attach wrapper, not a registered
+        // tmux client. Let startup exceed the CLI's client lookup retry bound.
+        terminal.startProcess(executable: "/bin/sleep", args: ["5"])
+        defer { controller.terminateClient() }
+        let cli = RecordingSessionSwitchCLI()
+        let coordinator = SessionAttachTerminalView.Coordinator(
+            controller: controller, session: source,
+            screenCache: SessionTerminalScreenCache(),
+            onTerminated: { _ in }, onSwitchFailed: { XCTFail($0) },
+            switchCLI: cli)
+        terminal.onFirstVisibleFrame = { [weak terminal, weak coordinator] in
+            guard let terminal else { return }
+            coordinator?.reportFirstVisibleFrame(from: terminal)
+        }
+        coordinator.requestSession(skipped, in: terminal)
+        coordinator.requestSession(target, in: terminal)
+        try await Task.sleep(nanoseconds: 600_000_000)
+        let earlyCalls = await cli.recordedCalls()
+        XCTAssertTrue(earlyCalls.isEmpty)
+        terminal.dataReceived(slice: Array("attached tmux frame".utf8)[...])
+        await waitUntilAsync { coordinator.session.id == target.id }
+        let calls = await cli.recordedCalls()
+        XCTAssertEqual(calls, [SessionClientSwitchInvocation.arguments(
+            clientPID: terminal.process.shellPid, from: source, to: target)])
+        coordinator.cancelSwitch()
     }
 
     @MainActor
@@ -973,6 +1024,143 @@ final class SessionAttachTerminalTests: XCTestCase {
         XCTAssertEqual(pasteboard.string(forType: .string), "selected text")
     }
 
+    func testEmptyNativeCopyPreservesClipboardContentsAndChangeCount() {
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        pasteboard.setString("tmux selection", forType: .string)
+        let changeCount = pasteboard.changeCount
+
+        XCTAssertEqual(SessionAttachClipboard.write("", to: pasteboard), "")
+
+        XCTAssertEqual(pasteboard.string(forType: .string), "tmux selection")
+        XCTAssertEqual(pasteboard.changeCount, changeCount)
+    }
+
+    @MainActor
+    func testCommandCCopiesNativeSelectionAndPreservesTmuxCopy() throws {
+        let pasteboard = NSPasteboard.general
+        let savedItems = (pasteboard.pasteboardItems ?? []).map { item in
+            let saved = NSPasteboardItem()
+            for type in item.types {
+                if let data = item.data(forType: type) {
+                    saved.setData(data, forType: type)
+                }
+            }
+            return saved
+        }
+        defer {
+            pasteboard.clearContents()
+            pasteboard.writeObjects(savedItems)
+        }
+        let terminal = MouseRecordingTerminalView(
+            frame: NSRect(x: 0, y: 0, width: 640, height: 360))
+        let coordinator = SessionAttachTerminalView.Coordinator(
+            controller: SessionAttachController(invocation: Self.invocation()),
+            session: try XCTUnwrap(Self.session()),
+            screenCache: SessionTerminalScreenCache(),
+            onTerminated: { _ in })
+        let commandC = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: .command,
+            timestamp: 0, windowNumber: 0, context: nil,
+            characters: "с", charactersIgnoringModifiers: "с",
+            isARepeat: false, keyCode: 8))
+        func copy() {
+            XCTAssertNil(coordinator.routeKeyboardEvent(
+                commandC, window: nil, firstResponder: terminal, in: terminal,
+                send: { _ in XCTFail("Command-C must not reach the provider") }))
+        }
+
+        // tmux owns the visible selection and copies it on mouse release.
+        terminal.feed(text: "\u{1B}[?1000h\u{1B}[?1006houtput")
+        pasteboard.clearContents()
+        pasteboard.setString("tmux selection", forType: .string)
+        XCTAssertEqual(terminal.selection.getSelectedText(), "")
+        let changeCount = pasteboard.changeCount
+        copy()
+        XCTAssertEqual(pasteboard.string(forType: .string), "tmux selection")
+        XCTAssertEqual(pasteboard.changeCount, changeCount)
+
+        terminal.selectAll(nil)
+        let selected = terminal.selection.getSelectedText()
+        XCTAssertTrue(selected.contains("output"))
+        copy()
+        XCTAssertEqual(pasteboard.string(forType: .string), selected)
+
+        let commandV = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: .command,
+            timestamp: 0, windowNumber: 0, context: nil,
+            characters: "м", charactersIgnoringModifiers: "м",
+            isARepeat: false, keyCode: 9))
+        let text = "Привет, мир! Ёж 🦔\n第二行"
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+        terminal.feed(text: "\u{1B}[?2004h")
+        for enhancement in ["", "\u{1B}[>1u"] {
+            terminal.feed(text: enhancement)
+            terminal.sent.removeAll()
+            XCTAssertNil(coordinator.routeKeyboardEvent(
+                commandV, window: nil, firstResponder: terminal, in: terminal,
+                send: { _ in XCTFail("Command-V must use native paste") }))
+            XCTAssertEqual(terminal.sent,
+                Array(("\u{1B}[200~" + text + "\u{1B}[201~").utf8))
+        }
+    }
+
+    @MainActor
+    func testPlainClicksOpenExplicitAndDetectedLinksButDragsDoNot() throws {
+        for mouseReporting in [false, true] {
+            for output in [
+                "https://example.com/path",
+                "\u{1B}]8;;https://example.com/path\u{07}Open link\u{1B}]8;;\u{07}",
+            ] {
+                let terminal = MouseRecordingTerminalView(
+                    frame: NSRect(x: 0, y: 0, width: 640, height: 360))
+                let controller = SessionAttachController(invocation: Self.invocation())
+                controller.configure(terminal, fontPointSize: 13)
+                let window = NSWindow(
+                    contentRect: terminal.frame, styleMask: .borderless,
+                    backing: .buffered, defer: false)
+                window.contentView = terminal
+                terminal.feed(text: mouseReporting
+                    ? "\u{1B}[?1000h\u{1B}[?1006h" + output : output)
+                func event(
+                    _ type: NSEvent.EventType, x: CGFloat = 10,
+                    modifiers: NSEvent.ModifierFlags = []
+                ) throws -> NSEvent {
+                    try XCTUnwrap(NSEvent.mouseEvent(
+                        with: type,
+                        location: NSPoint(x: x, y: terminal.frame.height - 5),
+                        modifierFlags: modifiers, timestamp: 0,
+                        windowNumber: window.windowNumber, context: nil,
+                        eventNumber: 1, clickCount: 1, pressure: 1))
+                }
+
+                terminal.mouseDown(with: try event(.leftMouseDown))
+                terminal.mouseUp(with: try event(.leftMouseUp))
+                XCTAssertEqual(terminal.opened, ["https://example.com/path"])
+
+                terminal.opened.removeAll()
+                for modifiers: NSEvent.ModifierFlags in [[], .command] {
+                    terminal.mouseDown(with: try event(.leftMouseDown, modifiers: modifiers))
+                    terminal.mouseDragged(with: try event(.leftMouseDragged, x: 30, modifiers: modifiers))
+                    terminal.mouseDragged(with: try event(.leftMouseDragged, x: 60, modifiers: modifiers))
+                    terminal.sent.removeAll()
+                    terminal.mouseUp(with: try event(.leftMouseUp, x: 60, modifiers: modifiers))
+                    XCTAssertTrue(terminal.opened.isEmpty)
+                    if mouseReporting {
+                        let release = String(decoding: terminal.sent, as: UTF8.self)
+                        XCTAssertTrue(release.hasPrefix("\u{1B}[<0;"), release)
+                        XCTAssertTrue(release.hasSuffix("m"), release)
+                    }
+                }
+
+                terminal.mouseDown(with: try event(.leftMouseDown))
+                terminal.mouseUp(with: try event(.leftMouseUp))
+                XCTAssertEqual(terminal.opened, ["https://example.com/path"])
+            }
+        }
+    }
+
     func testDroppedFileURLsBecomeShellSafeAbsolutePaths() throws {
         let pasteboard = NSPasteboard.withUniqueName()
         defer { pasteboard.releaseGlobally() }
@@ -1092,6 +1280,68 @@ final class SessionAttachTerminalTests: XCTestCase {
         terminal.dataReceived(slice: Array("more output".utf8)[...])
         RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.12))
         XCTAssertEqual(visibleFrameCount, 1)
+    }
+
+    @MainActor
+    func testAttachStartsWithVisibleGeometryAndCancelledHostNeverStarts() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("detach-sized-attach-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let record = root.appendingPathComponent("size")
+        let executable = root.appendingPathComponent("detach")
+        // Publish the record only after stty finishes. File creation alone
+        // can wake the reader before the redirected command writes its data.
+        try "#!/bin/sh\nstty size > '\(record.path).tmp' && mv '\(record.path).tmp' '\(record.path)'\nexec /bin/cat\n"
+            .write(to: executable, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755],
+                                             ofItemAtPath: executable.path)
+        let controller = SessionAttachController(invocation: SessionAttachInvocation(
+            detachPath: executable.path, session: try XCTUnwrap(Self.session()),
+            baseEnvironment: ["PATH": "/bin:/usr/bin"]))
+        let terminal = SessionAttachLocalProcessTerminalView(frame: .zero)
+        controller.configure(terminal, fontPointSize: 13)
+        controller.start()
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
+        XCTAssertFalse(terminal.process.running)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
+                              styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { controller.terminateClient(); window.close() }
+        window.contentView = terminal
+        terminal.setFrameSize(NSSize(width: 900, height: 600))
+        try waitUntil { FileManager.default.fileExists(atPath: record.path) }
+        let actual = try String(contentsOf: record, encoding: .utf8)
+            .split(whereSeparator: \.isWhitespace).compactMap { Int($0) }
+        XCTAssertEqual(actual, [terminal.terminal.rows, terminal.terminal.cols])
+        XCTAssertGreaterThan(terminal.terminal.rows, 24)
+        let initialSize = SessionAttachController.initialSize(
+            surfaceSize: terminal.bounds.size, fontPointSize: 13)
+        XCTAssertEqual(initialSize?.columns, terminal.terminal.cols)
+        XCTAssertEqual(initialSize?.rows, terminal.terminal.rows)
+        XCTAssertNil(SessionAttachController.initialSize(
+            surfaceSize: .zero, fontPointSize: 13))
+        let largerFontSize = SessionAttachController.initialSize(
+            surfaceSize: terminal.bounds.size, fontPointSize: 18)
+        XCTAssertLessThan(try XCTUnwrap(largerFontSize?.columns), terminal.terminal.cols)
+
+        let cancelled = SessionAttachLocalProcessTerminalView(frame: .zero)
+        var starts = 0
+        cancelled.startWhenSized { starts += 1 }
+        cancelled.stopFrameObservation()
+        window.contentView = cancelled
+        cancelled.setFrameSize(NSSize(width: 900, height: 600))
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
+        XCTAssertEqual(starts, 0)
+    }
+
+    @MainActor
+    func testSilentAttachCannotKeepAStaleScreenOverLiveInput() throws {
+        let terminal = SessionAttachLocalProcessTerminalView(
+            frame: NSRect(x: 0, y: 0, width: 640, height: 360))
+        terminal.retainScreen(Data("stale snapshot".utf8), fontPointSize: 13)
+        try waitUntil(timeout: 1.3) { !terminal.isRetainingScreen }
+        XCTAssertNil(terminal.terminal.getBufferAsData().range(of: Data("stale snapshot".utf8)))
     }
 
     func testDroppedPathNeverInsertsAControlCharacter() {

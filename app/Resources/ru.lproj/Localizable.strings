@@ -452,3 +452,5 @@
 "You can close the window — the icon keeps showing sleep state. ⌘Q quits Detach; sessions and sleep protection continue on their own." = "Окно можно закрывать — значок продолжит показывать состояние сна. ⌘Q завершает Detach; сессии и защита от сна продолжаются сами.";
 "Only a signed Detach release can update the background monitor." = "Только подписанный релиз Detach может обновить фоновый монитор.";
 "Only a signed Detach release can update the power helper." = "Только подписанный релиз Detach может обновить помощник питания.";
+
+"A session operation is in progress." = "Выполняется операция с сессией.";

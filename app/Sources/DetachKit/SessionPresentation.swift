@@ -134,6 +134,8 @@ public extension Session {
             L10n.string("The provider process exited while its worker remained alive.")
         case .providerPIDNotDescendant:
             L10n.string("The recorded provider PID is not owned by this worker.")
+        case .operationInProgress:
+            L10n.string("A session operation is in progress.")
         case .runtimeProcessWithoutTmux:
             L10n.string("A recorded runtime process is still alive without its managed tmux session; Detach will not signal it.")
         case .runtimeQuiescenceUnproven:

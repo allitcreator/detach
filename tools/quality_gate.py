@@ -127,9 +127,13 @@ DISTRIBUTION_SCENARIOS = (
     "SC-INSTALL-UNINSTALL",
 )
 COMPACT_CODEX_TEST_PARTS = (
+    # Resume and Delete have long independent waits. Keep their fixtures in
+    # separate lanes even on small hosts; the scheduler still admits only three.
+    "resume",
+    "delete",
     "guardrails",
     "lifecycle-recovery",
-    "resume-identity",
+    "identity",
 )
 COMPACT_CLAUDE_TEST_PARTS = (
     "session",

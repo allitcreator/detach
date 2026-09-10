@@ -736,6 +736,35 @@ final class SessionHealthTests: XCTestCase {
         XCTAssertEqual(foreign, SessionProcessHealth(worker: .dead, provider: .dead))
     }
 
+    func testProcessInspectorDoesNotReviveFinishedRuntimeFromReusedPIDs() {
+        let ready = Date(timeIntervalSince1970: 100)
+        for tmux: TmuxHealthState in [.missing, .dead] {
+            let result = SessionProcessHealthInspector.inspect(
+                tmuxState: tmux, workerPID: "10", providerPID: "30",
+                panePID: "10", runtimeReadyAt: ready, userID: 501,
+                lookup: { pid in
+                    SessionProcessIdentity(
+                        parentPID: pid == 30 ? 10 : 1, userID: 501,
+                        startedAtSeconds: 101)
+                })
+            XCTAssertEqual(result, SessionProcessHealth(worker: .dead, provider: .dead))
+        }
+    }
+
+    func testProcessInspectorKeepsOriginalAndUncertainRuntimeProcesses() {
+        for started: UInt64? in [99, 100, nil] {
+            let result = SessionProcessHealthInspector.inspect(
+                tmuxState: .missing, workerPID: "10", providerPID: "30",
+                panePID: "-", runtimeReadyAt: Date(timeIntervalSince1970: 100),
+                userID: 501, lookup: { pid in
+                    SessionProcessIdentity(
+                        parentPID: pid == 30 ? 10 : 1, userID: 501,
+                        startedAtSeconds: started)
+                })
+            XCTAssertEqual(result, SessionProcessHealth(worker: .alive, provider: .alive))
+        }
+    }
+
     func testProcessInspectorKeepsInvalidPIDsUnknownAndBoundsCycles() {
         var reads = 0
         let invalid = SessionProcessHealthInspector.inspect(

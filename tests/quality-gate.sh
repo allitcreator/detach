@@ -86,6 +86,8 @@ app_cache_miss_step="$(printf '%s\n' "$quality_shards_job" | sed -n \
 printf '%s\n' "$app_cache_miss_step" | \
   grep -F "steps.app-cache.outputs.cache-hit != 'true'" >/dev/null
 printf '%s\n' "$app_cache_miss_step" | \
+  grep -F '!matrix.builds_app' >/dev/null
+printf '%s\n' "$app_cache_miss_step" | \
   grep -F 'DETACH_QUALITY_APP_SCRATCH: 1' >/dev/null
 printf '%s\n' "$app_cache_miss_step" | \
   grep -F 'app/scripts/make-app.sh' >/dev/null

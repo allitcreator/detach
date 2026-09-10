@@ -32,24 +32,16 @@ case "$CODEX_TEST_PART" in
 esac
 
 codex_part_selected() {
-  [ "$CODEX_TEST_PART" = all ] || [ "$CODEX_TEST_PART" = "$1" ] || {
-    [ "$CODEX_TEST_PART" = preflight ] && {
-      [ "$1" = history ] || [ "$1" = configuration ]
-    } ||
-    [ "$CODEX_TEST_PART" = recovery ] && [ "$1" = restart ] ||
-    [ "$CODEX_TEST_PART" = guardrails ] && {
-      case "$1" in preflight|crash|history) return 0 ;; esac
-      return 1
-    } ||
-    [ "$CODEX_TEST_PART" = lifecycle-recovery ] && {
-      case "$1" in configuration|lifecycle|recovery|restart) return 0 ;; esac
-      return 1
-    } ||
-    [ "$CODEX_TEST_PART" = resume-identity ] && {
-      case "$1" in resume|identity|delete) return 0 ;; esac
-      return 1
-    }
-  }
+  [ "$CODEX_TEST_PART" != all ] && [ "$CODEX_TEST_PART" != "$1" ] || return 0
+  case "$CODEX_TEST_PART:$1" in
+    preflight:history|preflight:configuration|recovery:restart|\
+    guardrails:preflight|guardrails:crash|guardrails:history|\
+    lifecycle-recovery:configuration|lifecycle-recovery:lifecycle|\
+    lifecycle-recovery:recovery|lifecycle-recovery:restart|\
+    resume-identity:resume|resume-identity:identity|resume-identity:delete)
+      return 0 ;;
+  esac
+  return 1
 }
 
 codex_scenario_event() {
@@ -494,6 +486,18 @@ test_sqlite() {
 }
 
 if codex_part_selected preflight; then
+for size in 0x24 80x0 1000x24 80x1000 080x24 80X24 '80x24;exit'; do
+  if "$DETACH" --terminal-size "$size" codex start --detach >"$TMP_ROOT/invalid-size.out" 2>&1; then
+    printf 'accepted invalid startup terminal size: %s\n' "$size" >&2
+    exit 1
+  fi
+  grep -F 'terminal size must be COLSxROWS' "$TMP_ROOT/invalid-size.out" >/dev/null
+done
+if "$DETACH" --terminal-size 80x24 codex stop >"$TMP_ROOT/invalid-size-command.out" 2>&1; then
+  printf 'accepted a startup terminal size on Stop\n' >&2
+  exit 1
+fi
+grep -F 'requires an explicit start, resume, or recover command' "$TMP_ROOT/invalid-size-command.out" >/dev/null
   bash -n "$SCRIPT"
   bash -n "$ROOT/bin/detach-core"
   [ "$($SCRIPT __version)" = "$(<"$ROOT/VERSION")" ]
@@ -1169,7 +1173,7 @@ tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" status-right | \
 # the macOS clipboard through the Detach-owned server's copy-command.
 [ "$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" mouse)" = "on" ]
 [ "$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach_copy_type_through)" = "1" ]
-[ "$(tmux -L "$SOCKET" show-options -sqv copy-command)" = "/usr/bin/pbcopy" ]
+[ "$(tmux -L "$SOCKET" show-options -sqv copy-command)" = "LC_ALL=en_US.UTF-8 /usr/bin/pbcopy" ]
 tmux -L "$SOCKET" list-keys -T copy-mode | grep -F 'WheelUpPane' | \
   grep -F 'scroll-up' >/dev/null
 # Selections copy through the clipboard but keep the highlight and stay in
@@ -1219,28 +1223,216 @@ tmux -L "$SOCKET" list-keys -T root | grep -F 'S-Enter' | \
   grep -F 'send-keys M-Enter' | grep -F 'detach-root-original' >/dev/null
 tmux -L "$SOCKET" list-keys -T detach-root-original | grep -F 'S-Enter' | \
   grep -F 'send-keys Enter' >/dev/null
-# Exercise the actual client → tmux → raw-pane path. CSI-u Shift+Return must
-# arrive as the provider-compatible Option+Return bytes (Escape, carriage
-# return), rather than collapsing to ordinary Return as it did without the
-# managed root binding.
-shift_return_session="detach-shift-return-probe"
-shift_return_bytes="$TMP_ROOT/shift-return.bytes"
-tmux -L "$SOCKET" new-session -d -s "$shift_return_session" \
-  "/bin/sh -c 'stty raw -echo; /bin/dd bs=1 count=2 of=\"$shift_return_bytes\" 2>/dev/null'"
-{
-  /bin/sleep 0.5
-  printf '\033[13;2u'
-} | TERM=xterm-256color /usr/bin/perl -e 'alarm 6; exec @ARGV' \
-  /usr/bin/script -q /dev/null \
-  "$TMUX_TEST_BIN" -S "$SOCKET_PATH" attach-session -t "=$shift_return_session" \
-  >/dev/null
-[ "$(od -An -tx1 "$shift_return_bytes" | tr -d '[:space:]')" = "1b0d" ]
+# Проверяем байты клавиатуры через настоящий клиент и управляемый tmux.
+python3 - "$TMUX_TEST_BIN" "$SOCKET_PATH" "$TMP_ROOT" "$DETACH" <<'PY_TERMINAL_KEYBOARD'
+#!/usr/bin/env python3
+"""Проверка ввода встроенного терминала через управляемый tmux."""
+
+import os
+from pathlib import Path
+import pty
+import shlex
+import subprocess
+import sys
+import time
+
+
+def main():
+    binary, socket, directory, detach = sys.argv[1:]
+    root = Path(directory)
+    environment = dict(os.environ, TERM="xterm-256color", LC_ALL="en_US.UTF-8")
+
+    def tmux(*args):
+        return subprocess.check_output([binary, "-S", socket, *args], env=environment)
+
+    def wait_for(predicate):
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if predicate():
+                return
+            time.sleep(0.02)
+        raise AssertionError("управляемый tmux не передал ожидаемый ввод")
+
+    reader = root / "keyboard-reader.py"
+    reader.write_text(
+        "import os,sys,tty\n"
+        "tty.setraw(0)\n"
+        "output=open(sys.argv[1],'wb',buffering=0)\n"
+        "while True: output.write(os.read(0,4096))\n")
+    original = subprocess.check_output([detach, "config", "tmux-extended-keys"],
+                                       text=True).strip()
+    try:
+        for mode, enter in [("on", b"\x1b\r"), ("off", b"\r")]:
+            subprocess.run([detach, "config", "tmux-extended-keys", mode], check=True)
+            name = "detach-keyboard-" + mode
+            output = root / (name + ".bytes")
+            tmux("new-session", "-d", "-s", name, shlex.join([
+                sys.executable, str(reader), str(output)]))
+            master, slave = pty.openpty()
+            child = None
+            try:
+                child = subprocess.Popen(
+                    [binary, "-S", socket, "attach-session", "-t", name],
+                    stdin=slave, stdout=slave, stderr=slave,
+                    env=environment, start_new_session=True)
+                os.close(slave)
+                wait_for(lambda: output.exists() and name.encode() in tmux(
+                    "list-clients", "-F", "#{client_session}"))
+                # Swift/AppKit-тесты отдельно доказывают этот результат роутинга,
+                # включая Kitty, автоповтор, смену фокуса и подавление keyUp.
+                controls = b"\x01\x01\x05\x15\x03\x16"
+                os.write(master, controls + b"\x1b[13;2u")
+                expected = controls + enter
+                wait_for(lambda: output.read_bytes() == expected)
+                # Следующий символ обнаружит лишние или потерянные байты.
+                os.write(master, b"x")
+                wait_for(lambda: output.read_bytes() == expected + b"x")
+            finally:
+                tmux("kill-session", "-t", name)
+                if child is not None:
+                    child.wait(timeout=3)
+                os.close(master)
+    finally:
+        subprocess.run([detach, "config", "tmux-extended-keys", original], check=True)
+    print("Клавиатура через управляемый tmux: on/off PASS")
+
+
+if __name__ == "__main__":
+    main()
+PY_TERMINAL_KEYBOARD
 [ "$(tmux -L "$SOCKET" show-options -sv terminal-features | grep -Fxc -- '*:extkeys')" = "1" ]
 [ "$(tmux -L "$SOCKET" show-options -sv terminal-features | grep -Fxc -- '*:hyperlinks')" = "1" ]
 # Re-run the server configuration through a real attach. Attaching without a
 # controlling terminal fails after tmux_configure_server has already run, so the
 # terminal-features must still appear exactly once.
+original_copy_keys="$(tmux -L "$SOCKET" list-keys -T detach-copy-mode-original)"
+tmux -L "$SOCKET" set-option -s @detach_copy_type_through_initialized 1
+tmux -L "$SOCKET" set-option -s copy-command /usr/bin/pbcopy
+tmux -L "$SOCKET" unbind-key -T copy-mode Any
+tmux -L "$SOCKET" unbind-key -T copy-mode-vi Any
 run_codex attach integration </dev/null >/dev/null 2>&1 || true
+[ "$(tmux -L "$SOCKET" show-options -sqv @detach_copy_type_through_initialized)" = 2 ]
+[ "$(tmux -L "$SOCKET" list-keys -T detach-copy-mode-original)" = "$original_copy_keys" ]
+python3 - "$TMUX_TEST_BIN" "$SOCKET_PATH" "$TMP_ROOT" <<'PY_TERMINAL_PASTE'
+#!/usr/bin/env python3
+"""Exercise managed tmux clipboard and paste through a real terminal client."""
+
+import os
+from pathlib import Path
+import pty
+import shlex
+import subprocess
+import sys
+import time
+
+
+def wait_for(predicate):
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(0.02)
+    raise AssertionError("terminal clipboard condition did not become true")
+
+
+def main():
+    tmux, socket, directory = sys.argv[1:]
+    root = Path(directory)
+    utf8 = dict(os.environ, LC_ALL="en_US.UTF-8", TERM="xterm-256color")
+
+    def tm(*args):
+        return subprocess.check_output([tmux, "-S", socket, *args], env=utf8)
+
+    def read_clipboard():
+        return subprocess.check_output(
+            ["/usr/bin/pbpaste", "-pboard", "find"], env=utf8)
+
+    saved = read_clipboard()
+    sample = "Привет, мир! Ёж 🦔 第二行".encode()
+    copy_command = tm("show-options", "-sqv", "copy-command").decode().strip()
+    reader = root / "paste-reader.py"
+    reader.write_text(
+        "import os,sys,tty\n"
+        "tty.setraw(0)\n"
+        "output=open(sys.argv[1],'wb',buffering=0)\n"
+        "os.write(1, bytes.fromhex(sys.argv[2]))\n"
+        "while True: output.write(os.read(0,4096))\n")
+    try:
+        for key_mode in ["emacs", "vi"]:
+            for enabled in [False, True]:
+                name = f"detach-paste-{key_mode}-{int(enabled)}"
+                output = root / f"{name}.bytes"
+                child = None
+                master = None
+                try:
+                    banner = b"\x1b[?2004h" + sample + b"\r\n"
+                    tm("new-session", "-d", "-s", name, shlex.join([
+                        sys.executable, str(reader), str(output), banner.hex()]))
+                    tm("set-option", "-t", name, "mode-keys", key_mode)
+                    tm("set-option", "-t", name, "@detach_copy_type_through",
+                       str(int(enabled)))
+                    master, slave = pty.openpty()
+                    child = subprocess.Popen(
+                        [tmux, "-S", socket, "attach-session", "-t", name],
+                        stdin=slave, stdout=slave, stderr=slave,
+                        env=utf8, start_new_session=True)
+                    os.close(slave)
+                    wait_for(lambda: sample in tm("capture-pane", "-p", "-t", name))
+                    wait_for(lambda: name.encode() in tm(
+                        "list-clients", "-F", "#{client_session}"))
+                    tm("copy-mode", "-t", name)
+                    tm("send-keys", "-t", name, "-X", "cursor-up")
+                    tm("send-keys", "-t", name, "-X", "select-line")
+                    # Use the configured command under a C locale on the find
+                    # board, leaving the user's general clipboard untouched.
+                    tm("set-environment", "-t", name, "LC_ALL", "C")
+                    tm("send-keys", "-t", name, "-X", "copy-pipe-no-clear",
+                       copy_command + " -pboard find")
+                    wait_for(lambda: read_clipboard().rstrip(b"\n") == sample)
+                    assert tm("display-message", "-p", "-t", name,
+                              "#{pane_in_mode}").strip() == b"1"
+                    # Bound navigation must keep copy mode active.
+                    os.write(master, b"\x1b[A")
+                    time.sleep(0.05)
+                    assert tm("display-message", "-p", "-t", name,
+                              "#{pane_in_mode}").strip() == b"1"
+                    payload = read_clipboard().rstrip(b"\n") + b"\nsecond line"
+                    framed = b"\x1b[200~" + payload + b"\x1b[201~"
+                    os.write(master, framed)
+                    if enabled:
+                        wait_for(lambda: output.read_bytes() == framed)
+                        assert tm("display-message", "-p", "-t", name,
+                                  "#{pane_in_mode}").strip() == b"0"
+                        os.write(master, framed)
+                        wait_for(lambda: output.read_bytes() == framed * 2)
+                    else:
+                        time.sleep(0.15)
+                        assert output.read_bytes() == b""
+                        assert tm("display-message", "-p", "-t", name,
+                                  "#{pane_in_mode}").strip() == b"1"
+                except BaseException:
+                    print("terminal paste fixture:", name, file=sys.stderr)
+                    print("pane state:", tm("display-message", "-p", "-t", name,
+                          "#{pane_dead}|#{pane_dead_status}|#{pane_width}x#{pane_height}")
+                          .decode(errors="replace"), file=sys.stderr)
+                    print("pane output:", repr(tm("capture-pane", "-p", "-t", name)),
+                          file=sys.stderr)
+                    raise
+                finally:
+                    tm("kill-session", "-t", name)
+                    if child is not None:
+                        child.wait(timeout=3)
+                    if master is not None:
+                        os.close(master)
+    finally:
+        subprocess.run(["/usr/bin/pbcopy", "-pboard", "find"],
+                       input=saved, env=utf8, check=True)
+    print("UTF-8 clipboard and bracketed paste round trips passed")
+
+
+if __name__ == "__main__":
+    main()
+PY_TERMINAL_PASTE
 [ "$(tmux -L "$SOCKET" show-options -sv terminal-features | grep -Fxc -- '*:extkeys')" = "1" ]
 [ "$(tmux -L "$SOCKET" show-options -sv terminal-features | grep -Fxc -- '*:hyperlinks')" = "1" ]
 grep -Fx -- 'run' "$FAKE_POWER_ARGS_FILE" >/dev/null
@@ -1942,6 +2134,9 @@ if [ "$CODEX_TEST_PART" = all ] || \
   bootstrap_codex_checkpoint
 fi
 
+python3 "$ROOT/tests/runtime-state-consistency.py" \
+  "$SCRIPT" "$expected_id" "$SESSION" "$meta" "$STATE_HELPER" "$TMP_ROOT"
+
 # Explicit resume follows Codex semantics and accepts the exact thread UUID.
 export FAKE_CODEX_INIT_DELAY=0
 export FAKE_CODEX_SLEEP=1
@@ -2250,7 +2445,7 @@ if [ "$(printf '%s' "$held_resume_json" | \
      "$STATE_HELPER" meta get /dev/stdin effective_status 2>/dev/null || true)" != \
      starting ] || \
    ! printf '%s' "$held_resume_json" | \
-     grep -F '"health_actions":["attach","stop"]' >/dev/null; then
+     grep -F '"health_actions":["attach"]' >/dev/null; then
   : >"$FAKE_POWER_FAIL_RELEASE_FILE"
   wait "$failed_resume_pid" || true
   printf 'Codex list exposed recovery while replacement B was still starting: %s\n' \
@@ -2351,6 +2546,10 @@ cp -Rp "$codex_session_dir" "$missing_backup_dir"
 "$STATE_HELPER" meta patch "$missing_backup_dir/checkpoint/meta.json" \
   --string session_name "$missing_backup_session" \
   --string display_name "$missing_backup_name"
+# An interrupted publication can retain an older complete generation. Recover
+# must preserve it until the valid live source has rebuilt canonical recovery.
+missing_backup_retained="$missing_backup_dir/.checkpoint-stage-retained-recovery"
+cp -Rp "$missing_backup_dir/checkpoint" "$missing_backup_retained"
 rm -f "$missing_backup_dir/checkpoint/rollout.jsonl"
 missing_backup_json="$(run_codex list --json | \
   grep -F "\"session_name\":\"$missing_backup_session\"")"
@@ -2360,9 +2559,46 @@ missing_backup_json="$(run_codex list --json | \
   "$STATE_HELPER" meta get /dev/stdin agent_session_id)" = "$expected_id" ]
 printf '%s' "$missing_backup_json" | \
   grep -F '"health_actions":["recover","delete"]' >/dev/null
+# Reject unsafe retained paths without touching the saved generation.
+missing_backup_unsafe="$missing_backup_dir/.checkpoint-stage-unsafe"
+missing_backup_retained_copy="$TMP_ROOT/retained-recovery-copy"
+cp -Rp "$missing_backup_retained" "$missing_backup_retained_copy"
+ln -s "$missing_backup_retained_copy" "$missing_backup_unsafe"
+if run_codex recover --detach "$missing_backup_name" \
+    >"$TMP_ROOT/unsafe-retained-recover.out" 2>&1; then
+  printf 'Recover accepted a symlinked retained checkpoint stage\n' >&2
+  exit 1
+fi
+[ -L "$missing_backup_unsafe" ]
+diff -qr "$missing_backup_retained_copy" "$missing_backup_retained" >/dev/null
+[ ! -e "$missing_backup_dir/checkpoint/rollout.jsonl" ]
+rm "$missing_backup_unsafe"
+# Force publication to fail after the live source was staged. Old retained
+# data must survive, and the next ordinary Recover must still succeed.
+missing_backup_state_wrapper="$TMP_ROOT/retained-recovery-state"
+missing_backup_exchange_attempt="$TMP_ROOT/retained-recovery-exchange-attempt"
+{
+  printf '#!/bin/bash\n'
+  printf 'if [ "$1:$2" = checkpoint:exchange ] && [ "$3" = %q ]; then\n' "$missing_backup_dir"
+  printf '  : >%q\n  exit 1\nfi\n' "$missing_backup_exchange_attempt"
+  printf 'exec %q "$@"\n' "$STATE_HELPER"
+} >"$missing_backup_state_wrapper"
+chmod 0700 "$missing_backup_state_wrapper"
+if DETACH_STATE_BIN="$missing_backup_state_wrapper" \
+    run_codex recover --detach "$missing_backup_name" \
+    >"$TMP_ROOT/retained-publication-failure.out" 2>&1; then
+  printf 'Recover accepted a failed checkpoint publication\n' >&2
+  exit 1
+fi
+[ -f "$missing_backup_exchange_attempt" ]
+diff -qr "$missing_backup_retained_copy" "$missing_backup_retained" >/dev/null
+[ ! -e "$missing_backup_dir/checkpoint/rollout.jsonl" ]
 export FAKE_CODEX_SLEEP=20
 run_codex recover --detach "$missing_backup_name"
 wait_for_tmux_option "$missing_backup_session" @detach_status running
+[ ! -e "$missing_backup_retained" ]
+"$STATE_HELPER" jsonl validate codex \
+  "$missing_backup_dir/checkpoint/rollout.jsonl" "$expected_id"
 require_file_line "$FAKE_CODEX_ARGS_FILE" resume
 require_file_line "$FAKE_CODEX_ARGS_FILE" "$expected_id"
 require_file_line "$FAKE_CODEX_ARGS_FILE" detach-recovery-model
@@ -2729,7 +2965,9 @@ mkdir -p "$other_cwd"
 # event.
 status_hint="$(cat "$DETACH_STATE_ROOT/session-change")"
 (cd "$other_cwd" && DETACH_CODEX_BIN="$uppercase_codex" \
-  "$DETACH" resume --name integration --detach "$uppercase_id")
+  "$DETACH" --terminal-size 137x47 resume --name integration --detach "$uppercase_id")
+[ "$(awk '{print $1, $2}' "$FAKE_CODEX_ARGS_FILE.terminal-size")" = '47 137' ]
+[ -z "$(cat "$FAKE_CODEX_ARGS_FILE.initial-size-hint")" ]
 : >"$uppercase_release"
 wait_for_tmux_option "$SESSION" @detach_status completed
 grep -Fx 'resume' "$FAKE_CODEX_ARGS_FILE" >/dev/null
@@ -3967,12 +4205,12 @@ DETACH_TMUX_SOCKET_PATH="$SOCKET_PATH" \
 list_scale_elapsed="$SECONDS"
 [ "$(wc -l <"$list_scale_output" | tr -d '[:space:]')" = 25 ]
 [ "$(grep -Fc '"model":"gpt-scale"' "$list_scale_output")" = 25 ]
-[ "$(wc -l <"$list_scale_invocations" | tr -d '[:space:]')" -le 5 ] || {
+[ "$(wc -l <"$list_scale_invocations" | tr -d '[:space:]')" -le 7 ] || {
   printf 'list restored per-field state helper fan-out\n' >&2
   exit 1
 }
-[ "$(wc -l <"$list_scale_tmux_invocations" | tr -d '[:space:]')" = 1 ] || {
-  printf 'list did not use one batched tmux snapshot\n' >&2
+[ "$(wc -l <"$list_scale_tmux_invocations" | tr -d '[:space:]')" = 2 ] || {
+  printf 'list did not validate its batched tmux snapshot\n' >&2
   exit 1
 }
 [ "$(find "$list_scale_root/sessions" -name .transcript-summary-cache.json -type f | \
@@ -3996,8 +4234,8 @@ DETACH_TMUX_SOCKET_PATH="$SOCKET_PATH" \
   "$SCRIPT" codex list --json >"$list_scale_output"
 list_scale_hot_elapsed="$SECONDS"
 [ "$(wc -l <"$list_scale_output" | tr -d '[:space:]')" = 25 ]
-[ "$(wc -l <"$list_scale_invocations" | tr -d '[:space:]')" -le 5 ]
-[ "$(wc -l <"$list_scale_tmux_invocations" | tr -d '[:space:]')" = 1 ]
+[ "$(wc -l <"$list_scale_invocations" | tr -d '[:space:]')" -le 7 ]
+[ "$(wc -l <"$list_scale_tmux_invocations" | tr -d '[:space:]')" = 2 ]
 [ "$list_scale_hot_elapsed" -lt 5 ] || {
   printf 'cached 25-session list exceeded the app deadline: %ss\n' \
     "$list_scale_hot_elapsed" >&2

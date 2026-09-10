@@ -17,6 +17,7 @@ die() {
 usage() {
   printf '%s\n' \
     'Usage:' \
+    '  detach [--terminal-size COLSxROWS] <provider> [start|resume|recover] [ARGS...]' \
     '  detach codex [COMMAND] [ARGS...]' \
     '  detach claude [COMMAND] [ARGS...]' \
     '  detach list [--json]' \
@@ -720,6 +721,19 @@ client_switch() {
 }
 
 main() {
+  # Startup dimensions are request-local. Do not reuse an inherited hint.
+  unset DETACH_INITIAL_TERMINAL_SIZE
+  if [ "${1:-}" = --terminal-size ]; then
+    [ "$#" -ge 3 ] || die "--terminal-size requires COLSxROWS and a startup command"
+    [[ "$2" =~ ^[1-9][0-9]{0,2}x[1-9][0-9]{0,2}$ ]] || \
+      die "terminal size must be COLSxROWS with each dimension from 1 to 999"
+    export DETACH_INITIAL_TERMINAL_SIZE="$2"
+    shift 2
+    case "${1:-}:${2:-}" in
+      resume:*|codex:start|codex:resume|codex:recover|claude:start|claude:resume|claude:recover) ;;
+      *) die "--terminal-size requires an explicit start, resume, or recover command" ;;
+    esac
+  fi
   local command="${1:-}"
   local repair_metadata="" local_repair_source="" local_repair_version=""
   local local_repair_installer=""

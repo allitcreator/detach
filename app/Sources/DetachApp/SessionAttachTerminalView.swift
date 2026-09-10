@@ -272,9 +272,10 @@ final class SessionTerminalScreenCache {
     }
 }
 
-final class SessionAttachLocalProcessTerminalView: LocalProcessTerminalView {
+class SessionAttachLocalProcessTerminalView: LocalProcessTerminalView {
     var onDroppedPaths: ((String) -> Void)?
     var onFirstVisibleFrame: (() -> Void)?
+    private var didDragPointer = false
     private var didConfigureEventDrivenRenderer = false
     private var retainedScreenView: NSView?
     private var frameReadinessCheck: DispatchWorkItem?
@@ -290,13 +291,79 @@ final class SessionAttachLocalProcessTerminalView: LocalProcessTerminalView {
         registerForDraggedTypes([.fileURL])
     }
 
+    override func copy(_ sender: Any) {
+        // tmux copies its own mouse selection on release. It is not a
+        // SwiftTerm selection, so an empty native copy must preserve it.
+        SessionAttachClipboard.write(
+            selection.getSelectedText(), to: .general)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        didDragPointer = false
+        super.mouseDown(with: event)
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        didDragPointer = true
+        super.mouseDragged(with: event)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        // SwiftTerm does not mark drags forwarded to tmux as selection drags.
+        // Disable link activation for this release, but let its normal mouse
+        // handler finish the gesture and send the release to tmux.
+        guard didDragPointer, let release = NSEvent.mouseEvent(
+            with: event.type, location: event.locationInWindow,
+            modifierFlags: event.modifierFlags.subtracting(.command),
+            timestamp: event.timestamp, windowNumber: event.windowNumber,
+            context: nil, eventNumber: event.eventNumber,
+            clickCount: event.clickCount, pressure: event.pressure) else {
+            super.mouseUp(with: event)
+            return
+        }
+        let mode = linkHighlightMode
+        linkHighlightMode = .hoverWithModifier
+        defer { linkHighlightMode = mode }
+        super.mouseUp(with: release)
+    }
+
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         guard window != nil else { return }
         configureRealtimeRendererIfNeeded()
+        scheduleSizedStart()
         DispatchQueue.main.async { [weak self] in
             guard let self, let window = self.window else { return }
             window.makeFirstResponder(self)
+        }
+    }
+
+    private var pendingStart: (() -> Void)?
+    private var startScheduled = false
+    private var retainedScreenDeadline: DispatchWorkItem?
+
+    func startWhenSized(_ start: @escaping () -> Void) {
+        pendingStart = start
+        scheduleSizedStart()
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        scheduleSizedStart()
+    }
+
+    private func scheduleSizedStart() {
+        guard pendingStart != nil, !startScheduled,
+              window != nil, bounds.width > 0, bounds.height > 0 else { return }
+        startScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.startScheduled = false
+            guard self.window != nil,
+                  self.bounds.width > 0, self.bounds.height > 0 else { return }
+            let start = self.pendingStart
+            self.pendingStart = nil
+            start?()
         }
     }
 
@@ -315,6 +382,11 @@ final class SessionAttachLocalProcessTerminalView: LocalProcessTerminalView {
         overlay.autoresizingMask = [.width, .height]
         addSubview(overlay, positioned: .above, relativeTo: nil)
         retainedScreenView = overlay
+        let deadline = DispatchWorkItem { [weak self] in
+            self?.removeRetainedScreen()
+        }
+        retainedScreenDeadline = deadline
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: deadline)
     }
 
     override func dataReceived(slice: ArraySlice<UInt8>) {
@@ -339,17 +411,24 @@ final class SessionAttachLocalProcessTerminalView: LocalProcessTerminalView {
     }
 
     func removeRetainedScreen() {
+        retainedScreenDeadline?.cancel()
+        retainedScreenDeadline = nil
+        needsDisplay = true
         retainedScreenView?.removeFromSuperview()
         retainedScreenView = nil
     }
 
     func stopFrameObservation() {
+        pendingStart = nil
+        retainedScreenDeadline?.cancel()
+        retainedScreenDeadline = nil
         frameReadinessCheck?.cancel()
         frameReadinessCheck = nil
         onFirstVisibleFrame = nil
     }
 
     var isRetainingScreen: Bool { retainedScreenView != nil }
+    var hasFirstVisibleFrame: Bool { didReportFirstVisibleFrame }
 
     static func hasVisibleContent(in terminal: Terminal) -> Bool {
         (0..<terminal.rows).contains { row in
@@ -652,6 +731,14 @@ final class SessionAttachController: NSObject, LocalProcessTerminalViewDelegate 
         NSFont.monospacedSystemFont(ofSize: max(pointSize, 1), weight: .regular)
     }
 
+    @MainActor
+    static func initialSize(surfaceSize: CGSize, fontPointSize: CGFloat) -> SessionTerminalSize? {
+        guard surfaceSize.width > 0, surfaceSize.height > 0 else { return nil }
+        let view = LocalProcessTerminalView(frame: CGRect(origin: .zero, size: surfaceSize))
+        view.font = terminalFont(pointSize: fontPointSize)
+        return SessionTerminalSize(columns: view.terminal.cols, rows: view.terminal.rows)
+    }
+
     static func terminate(process: LocalProcess, timeout: TimeInterval = 1) {
         let pid = process.shellPid
         process.terminate()
@@ -692,6 +779,7 @@ final class SessionAttachController: NSObject, LocalProcessTerminalViewDelegate 
         view.font = Self.terminalFont(pointSize: fontPointSize)
         view.nativeBackgroundColor = ANSIParser.terminalBackground
         view.nativeForegroundColor = NSColor(white: 0.85, alpha: 1)
+        view.linkHighlightMode = .hover
         view.setAccessibilityIdentifier("session-preview-terminal")
         view.setAccessibilityLabel(L10n.string("Live session terminal"))
         view.setAccessibilityElement(true)
@@ -706,6 +794,17 @@ final class SessionAttachController: NSObject, LocalProcessTerminalViewDelegate 
     }
 
     func start(on view: LocalProcessTerminalView) {
+        if let terminal = view as? SessionAttachLocalProcessTerminalView {
+            terminal.startWhenSized { [weak self, weak view] in
+                guard let self, let view else { return }
+                self.startSizedProcess(on: view)
+            }
+        } else {
+            startSizedProcess(on: view)
+        }
+    }
+
+    private func startSizedProcess(on view: LocalProcessTerminalView) {
         view.startProcess(
             executable: invocation.executable,
             args: invocation.arguments,
@@ -717,6 +816,7 @@ final class SessionAttachController: NSObject, LocalProcessTerminalViewDelegate 
 enum SessionAttachClipboard {
     @discardableResult
     static func write(_ text: String, to pasteboard: NSPasteboard) -> String {
+        guard !text.isEmpty else { return text }
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
         return text
@@ -837,6 +937,11 @@ struct SessionAttachTerminalView: NSViewRepresentable {
         ) {
             attachedView = view
             desiredSession = target
+            guard view.process.running || view.process.shellPid > 0 else { return }
+            // The child PID initially belongs to the public attach CLI. Wait
+            // for its tmux frame before requesting an exact-client switch.
+            if let terminal = view as? SessionAttachLocalProcessTerminalView,
+               !terminal.hasFirstVisibleFrame { return }
             guard target.id != session.id, switchTask == nil else { return }
             switchTask = Task { @MainActor [weak self, weak view] in
                 await self?.drainSwitches(in: view)
@@ -903,6 +1008,7 @@ struct SessionAttachTerminalView: NSViewRepresentable {
         func reportFirstVisibleFrame(from view: LocalProcessTerminalView) {
             captureScreen(from: view)
             onFirstVisibleFrame()
+            requestSession(desiredSession, in: view)
         }
 
         func installKeyboardMonitor(for view: LocalProcessTerminalView) {

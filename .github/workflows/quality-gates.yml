@@ -138,7 +138,7 @@ jobs:
           app/scripts/verify-app.sh
           printf 'DETACH_QUALITY_EXACT_APP=1\n' >>"$GITHUB_ENV"
       - name: Build and bind exact packaged test app
-        if: (matrix.needs_app || (matrix.needs_runtime && steps.product-cache.outputs.cache-hit != 'true')) && steps.app-cache.outputs.cache-hit != 'true'
+        if: (!matrix.builds_app && (matrix.needs_app || (matrix.needs_runtime && steps.product-cache.outputs.cache-hit != 'true'))) && steps.app-cache.outputs.cache-hit != 'true'
         env:
           DETACH_QUALITY_APP_SCRATCH: 1
         run: |
@@ -470,4 +470,4 @@ jobs:
           path: app/build/quality-dashboard
       - name: Deploy quality dashboard
         id: deployment
-        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

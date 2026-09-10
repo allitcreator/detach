@@ -40,6 +40,7 @@ class QualityShardContract(unittest.TestCase):
                     "stages": "static",
                     "level": 0,
                     "needs_app": False,
+                    "builds_app": False,
                     "needs_cache": False,
                     "needs_runtime": False,
                     "needs_metrics": False,
@@ -76,6 +77,7 @@ class QualityShardContract(unittest.TestCase):
         build = shard_for({"stages": stages}, "build-and-coverage")
         self.assertEqual(build["stages"], "swift,quality-contracts,app,ui-e2e")
         self.assertTrue(build["needs_app"])
+        self.assertTrue(build["builds_app"])
         self.assertTrue(build["needs_cache"])
         self.assertTrue(build["needs_metrics"])
         self.assertEqual(build["coverage_profile"], "combined")
@@ -84,10 +86,12 @@ class QualityShardContract(unittest.TestCase):
             contracts["stages"], "gate-contract,tmux-runtime,release-preflight"
         )
         self.assertTrue(contracts["needs_app"])
+        self.assertFalse(contracts["builds_app"])
         self.assertFalse(contracts["needs_cache"])
         self.assertFalse(contracts["needs_runtime"])
         codex = shard_for({"stages": stages}, "codex")
         self.assertFalse(codex["needs_app"])
+        self.assertFalse(codex["builds_app"])
         self.assertTrue(codex["needs_cache"])
         self.assertTrue(codex["needs_runtime"])
         self.assertFalse(build["needs_runtime"])

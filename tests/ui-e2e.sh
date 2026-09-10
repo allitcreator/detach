@@ -14,7 +14,16 @@ FAKE_CLI=""
 IDENTIFIER=""
 
 approved_invocation() {
-  case "$1" in
+  local invocation="$1"
+  if [[ "$invocation" =~ ^--terminal-size\ [1-9][0-9]{0,2}x[1-9][0-9]{0,2}\ (.*)$ ]]; then
+    invocation="${BASH_REMATCH[1]}"
+    case "$invocation" in
+      'codex recover --detach detach-codex-ui-recoverable'|\
+      'claude resume --name detach-claude-ui-completed --detach a9f58f1d-1234-5678-9abc-def012342ed9') ;;
+      *) return 1 ;;
+    esac
+  fi
+  case "$invocation" in
     'list --json'|\
     'watch --json'|\
     'codex logs --ansi detach-codex-ui-running'|\
@@ -24,7 +33,7 @@ approved_invocation() {
     'codex recover --detach detach-codex-ui-recoverable'|\
     'codex attach --terminal-features sync detach-codex-ui-recoverable'|\
     'claude logs --ansi detach-claude-ui-completed'|\
-    'resume --detach a9f58f1d-1234-5678-9abc-def012342ed9'|\
+    'claude resume --name detach-claude-ui-completed --detach a9f58f1d-1234-5678-9abc-def012342ed9'|\
     'claude attach --terminal-features sync detach-claude-ui-completed'|\
     'claude --detach'|\
     'codex --detach'|\
@@ -583,7 +592,7 @@ done <"$FAKE_DIR/invocations.log"
 
 # Every scenario starts clean, so the main journey's records live in its
 # preserved per-scenario copy.
-recover_count="$(grep -Fxc 'codex recover --detach detach-codex-ui-recoverable' \
+recover_count="$(grep -Ec '^(--terminal-size [1-9][0-9]{0,2}x[1-9][0-9]{0,2} )?codex recover --detach detach-codex-ui-recoverable$' \
   "$TEST_ROOT/invocations-main.log" || true)"
 recover_attach_count="$(grep -Fxc \
   'codex attach --terminal-features sync detach-codex-ui-recoverable' \

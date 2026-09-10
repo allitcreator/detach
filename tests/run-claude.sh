@@ -259,7 +259,9 @@ wait_for_fake_claude_ready() {
 
 wait_for_file_text() {
   local file="$1" text="$2" attempts=0
-  while [ "$attempts" -lt 100 ]; do
+  # Recovery can restore and sync the prior generation before fixture entry.
+  # Allow its entry wait to cover the runtime readiness window.
+  while [ "$attempts" -lt 400 ]; do
     if [ -f "$file" ] && grep -Fx -- "$text" "$file" >/dev/null 2>&1; then
       return 0
     fi
@@ -618,21 +620,25 @@ wait_for_file_text "$power_activity" waiting
 printf '{"type":"user","isSidechain":false,"isMeta":false,"sessionId":"%s","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"ask-tool"}]},"uuid":"tool-result-event","timestamp":"2099-01-01T00:02:00.000Z"}\n' \
   "$session_id" >>"$transcript"
 wait_for_file_text "$power_activity" working
-printf '{"type":"assistant","isSidechain":false,"sessionId":"%s","message":{"role":"assistant","stop_reason":"end_turn","id":"message-1"},"uuid":"assistant-chunk-1","timestamp":"2099-01-01T00:03:00.000Z"}\n' \
+printf '{"type":"assistant","isSidechain":false,"sessionId":"%s","message":{"role":"assistant","stop_reason":"end_turn","id":"message-1","content":[{"type":"thinking","thinking":"Ready to answer."}]},"uuid":"assistant-chunk-1","timestamp":"2099-01-01T00:03:00.000Z"}\n' \
   "$session_id" >>"$transcript"
-printf '{"type":"assistant","isSidechain":false,"sessionId":"%s","message":{"role":"assistant","stop_reason":"end_turn","id":"message-1"},"uuid":"assistant-chunk-2","timestamp":"2099-01-01T00:03:01.000Z"}\n' \
+json_line="$("$SCRIPT" list --json | grep -F "\"session_name\":\"$session\"")"
+assert_json_field agent_turn_state working
+printf '{"type":"assistant","isSidechain":false,"sessionId":"%s","message":{"role":"assistant","stop_reason":"end_turn","id":"message-1","content":[{"type":"text","text":"Done."}]},"uuid":"assistant-chunk-2","timestamp":"2099-01-01T00:03:01.000Z"}\n' \
   "$session_id" >>"$transcript"
 json_line="$("$SCRIPT" list --json | grep -F "\"session_name\":\"$session\"")"
 [ "$(printf '%s' "$json_line" | "$STATE_HELPER" meta get /dev/stdin display_name)" = \
   "$human_label" ]
-[ "$(printf '%s' "$json_line" | "$STATE_HELPER" meta get /dev/stdin agent_turn_state)" = "working" ]
-[ "$(printf '%s' "$json_line" | "$STATE_HELPER" meta get /dev/stdin agent_turn_id)" = "tool-result-event" ]
+[ "$(printf '%s' "$json_line" | "$STATE_HELPER" meta get /dev/stdin agent_turn_state)" = "waiting" ]
+[ "$(printf '%s' "$json_line" | "$STATE_HELPER" meta get /dev/stdin agent_turn_id)" = "assistant-chunk-2" ]
+wait_for_file_text "$power_activity" waiting
+[ -s "$power_activity_source" ]
 printf '{"type":"system","subtype":"turn_duration","isSidechain":false,"sessionId":"%s","uuid":"turn-duration-1","timestamp":"2099-01-01T00:03:02.000Z"}\n' \
   "$session_id" >>"$transcript"
 json_line="$("$SCRIPT" list --json | grep -F "\"session_name\":\"$session\"")"
 [ "$(printf '%s' "$json_line" | "$STATE_HELPER" meta get /dev/stdin effective_status)" = "running" ]
 [ "$(printf '%s' "$json_line" | "$STATE_HELPER" meta get /dev/stdin agent_turn_state)" = "waiting" ]
-[ "$(printf '%s' "$json_line" | "$STATE_HELPER" meta get /dev/stdin agent_turn_id)" = "turn-duration-1" ]
+[ "$(printf '%s' "$json_line" | "$STATE_HELPER" meta get /dev/stdin agent_turn_id)" = "assistant-chunk-2" ]
 wait_for_file_text "$power_activity" waiting
 [ -s "$power_activity_source" ]
 printf '{"type":"user","isSidechain":false,"isMeta":false,"sessionId":"%s","message":{"role":"user","content":"continue"},"uuid":"turn-after-idle","timestamp":"2099-01-01T00:03:03.000Z"}\n' \
@@ -1072,8 +1078,9 @@ printf 'previous live tree\n' >"$stale_restore_destination.detach.old/sentinel"
 printf 'incomplete new tree\n' >"$stale_restore_destination.detach.tmp/sentinel"
 
 reset_fake_claude_ready
-"$SCRIPT" claude recover --detach "$human_label"
+"$SCRIPT" --terminal-size 123x41 claude recover --detach "$human_label"
 wait_for_fake_claude_ready
+[ "$(awk '{print $1, $2}' "$FAKE_CLAUDE_ARGS_FILE.terminal-size")" = '41 123' ]
 [ "$("$STATE_HELPER" meta get "$meta" display_name)" = "$human_label" ]
 grep -Fx -- '--resume' "$FAKE_CLAUDE_ARGS_FILE" >/dev/null
 grep -Fx -- "$session_id" "$FAKE_CLAUDE_ARGS_FILE" >/dev/null
@@ -1160,7 +1167,7 @@ if [ "$(printf '%s' "$held_resume_json" | \
      "$STATE_HELPER" meta get /dev/stdin effective_status 2>/dev/null || true)" != \
      starting ] || \
    ! printf '%s' "$held_resume_json" | \
-     grep -F '"health_actions":["attach","stop"]' >/dev/null; then
+     grep -F '"health_actions":["attach"]' >/dev/null; then
   : >"$FAKE_POWER_FAIL_RELEASE_FILE"
   wait "$failed_resume_pid" || true
   printf 'Claude list exposed recovery while replacement B was still starting: %s\n' \

@@ -216,6 +216,7 @@ final class DetachStateCommandTests: XCTestCase {
             ["meta", "snapshot", "only-path"],
             ["meta", "recovery-binding", "only-path"],
             ["meta", "snapshots"],
+            ["meta", "health-revision"],
             ["health", "session", "--"],
             ["health", "session", "no-separator"],
             ["health", "sessions"],
@@ -633,6 +634,134 @@ final class DetachStateCommandTests: XCTestCase {
         }
     }
 
+    func testMetadataPatchRejectsRedirectedLockWithoutChangingState() throws {
+        let metadata = temporaryDirectory.appendingPathComponent("meta.json")
+        _ = try DetachStateCommand.run(arguments: [
+            "meta", "create", metadata.path, "--string", "status", "stopped",
+        ])
+        let before = try Data(contentsOf: metadata)
+        let target = temporaryDirectory.appendingPathComponent("unrelated")
+        let sentinel = Data("do not change".utf8)
+        try sentinel.write(to: target)
+        let lock = temporaryDirectory.appendingPathComponent(".meta-patch.lock")
+        try? FileManager.default.removeItem(at: lock)
+        try FileManager.default.createSymbolicLink(at: lock, withDestinationURL: target)
+        XCTAssertThrowsError(try DetachStateCommand.run(arguments: [
+            "meta", "patch", metadata.path, "--string", "status", "running",
+        ])) { error in
+            XCTAssertEqual((error as? CocoaError)?.code, .fileWriteNoPermission)
+        }
+        XCTAssertEqual(try Data(contentsOf: metadata), before)
+        XCTAssertEqual(try Data(contentsOf: target), sentinel)
+    }
+
+    func testHealthRevisionTracksLifecycleAndLocksButIgnoresRoutineFreshness() throws {
+        let root = temporaryDirectory.appendingPathComponent("sessions")
+        let session = "detach-codex-revision"
+        let directory = root.appendingPathComponent(session)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let metadata = directory.appendingPathComponent("meta.json")
+        _ = try DetachStateCommand.run(arguments: [
+            "meta", "create", metadata.path, "--integer", "schema", "1",
+            "--string", "session_name", session, "--string", "project_dir", "/tmp/project",
+            "--string", "status", "running", "--string", "run_token", "generation-a",
+        ])
+        let arguments = ["meta", "health-revision", root.path, temporaryDirectory.path]
+        func revision() throws -> Data { try DetachStateCommand.run(arguments: arguments) }
+        let initial = try revision()
+        _ = try DetachStateCommand.run(arguments: [
+            "meta", "patch", metadata.path,
+            "--integer", "worker_heartbeat_epoch", "123",
+            "--string", "last_checkpoint_at", "2026-09-08T12:00:00Z",
+        ])
+        XCTAssertEqual(try revision(), initial)
+        _ = try DetachStateCommand.run(arguments: [
+            "meta", "patch", metadata.path, "--string", "run_token", "generation-b",
+        ])
+        let replacement = try revision()
+        XCTAssertNotEqual(replacement, initial)
+        _ = try DetachStateCommand.run(arguments: [
+            "meta", "patch", metadata.path,
+            "--string", "runtime_shutdown_observed_at", "2026-09-08T12:00:01Z",
+        ])
+        let shutdown = try revision()
+        XCTAssertNotEqual(try revision(), replacement)
+        let lock = temporaryDirectory.appendingPathComponent("operation-" + session + ".lock")
+        let descriptor = open(lock.path, O_CREAT | O_RDWR | O_CLOEXEC, mode_t(0o600))
+        XCTAssertGreaterThanOrEqual(descriptor, 0)
+        defer { close(descriptor) }
+        XCTAssertEqual(try revision(), shutdown, "A lock file is not a held lock")
+        XCTAssertEqual(testMetadataFileLock(descriptor, LOCK_EX | LOCK_NB), 0)
+        XCTAssertNotEqual(try revision(), shutdown)
+        XCTAssertEqual(testMetadataFileLock(descriptor, LOCK_UN), 0)
+        XCTAssertEqual(try revision(), shutdown)
+        let checkpoint = directory.appendingPathComponent("checkpoint")
+        try FileManager.default.createDirectory(at: checkpoint, withIntermediateDirectories: false)
+        let published = try revision()
+        XCTAssertNotEqual(published, shutdown, "Checkpoint publication changes recovery eligibility")
+        try Data("cache receipt".utf8).write(to: checkpoint.appendingPathComponent("receipt"))
+        XCTAssertEqual(try revision(), published, "Receipt writes do not publish a checkpoint")
+        try FileManager.default.moveItem(at: checkpoint,
+            to: directory.appendingPathComponent("previous-checkpoint"))
+        try FileManager.default.createDirectory(at: checkpoint, withIntermediateDirectories: false)
+        XCTAssertNotEqual(try revision(), published, "Replacement must change the generation")
+        try FileManager.default.removeItem(at: lock)
+        try FileManager.default.createSymbolicLink(at: lock, withDestinationURL: metadata)
+        XCTAssertThrowsError(try revision())
+    }
+
+    func testListOperationLockClosesProvisionalFaultWithoutConcealingPersistentCollision() throws {
+        let lock = temporaryDirectory.appendingPathComponent("operation.lock")
+        var arguments = [
+            "health", "evaluate", "--metadata-valid", "true",
+            "--runtime-identity-expected", "true", "--meta-status", "stopped",
+            "--tmux", "foreign", "--run-token", "missing", "--worker", "dead",
+            "--provider-process", "dead", "--heartbeat", "missing",
+            "--checkpoint", "missing", "--checkpoint-recoverable", "false",
+            "--agent-session-known", "true", "--operation-lock", lock.path,
+        ]
+        func assessment() throws -> SessionHealthAssessment {
+            try JSONDecoder().decode(SessionHealthAssessment.self,
+                from: DetachStateCommand.run(arguments: arguments))
+        }
+        XCTAssertEqual(try assessment().effectiveStatus, .collision)
+        let descriptor = open(lock.path, O_CREAT | O_RDWR | O_CLOEXEC, mode_t(0o600))
+        XCTAssertGreaterThanOrEqual(descriptor, 0)
+        defer { close(descriptor) }
+        XCTAssertEqual(testMetadataFileLock(descriptor, LOCK_EX | LOCK_NB), 0)
+        let busy = try assessment()
+        XCTAssertEqual(busy.effectiveStatus, .starting)
+        XCTAssertEqual(busy.reason, .operationInProgress)
+        XCTAssertTrue(busy.actions.isEmpty)
+        XCTAssertFalse(busy.ownershipProven)
+        XCTAssertFalse(busy.cleanupEligible)
+        XCTAssertEqual(busy.reconcileAction, .none)
+        for (key, value) in [
+            ("--tmux", "live"), ("--run-token", "match"),
+            ("--worker", "alive"), ("--provider-process", "alive"),
+            ("--meta-status", "running"),
+        ] {
+            arguments[try XCTUnwrap(arguments.firstIndex(of: key)) + 1] = value
+        }
+        let attachable = try assessment()
+        XCTAssertEqual(attachable.effectiveStatus, .running)
+        XCTAssertTrue(attachable.ownershipProven)
+        XCTAssertEqual(attachable.actions, [.attach])
+        XCTAssertFalse(attachable.cleanupEligible)
+        XCTAssertEqual(attachable.reconcileAction, .none)
+        XCTAssertEqual(testMetadataFileLock(descriptor, LOCK_UN), 0)
+        XCTAssertEqual(try assessment().actions, [.attach, .stop])
+        arguments[try XCTUnwrap(arguments.firstIndex(of: "--tmux")) + 1] = "foreign"
+        XCTAssertEqual(try assessment().effectiveStatus, .collision)
+        try FileManager.default.removeItem(at: lock)
+        XCTAssertEqual(mkfifo(lock.path, mode_t(0o600)), 0)
+        XCTAssertThrowsError(try assessment())
+        arguments[try XCTUnwrap(arguments.firstIndex(of: "--operation-lock")) + 1] = "operation.lock"
+        XCTAssertThrowsError(try assessment()) { error in
+            XCTAssertEqual(error as? DetachStateCommandError, .invalidArguments)
+        }
+    }
+
     func testMetaSnapshotsBatchesFallbacksAndRejectsIncompleteInput() throws {
         let root = temporaryDirectory.appendingPathComponent("sessions", isDirectory: true)
         let first = root.appendingPathComponent("detach-codex-one", isDirectory: true)
@@ -1015,7 +1144,7 @@ final class DetachStateCommandTests: XCTestCase {
         let migratedReceipt = try XCTUnwrap(
             JSONSerialization.jsonObject(with: Data(contentsOf: receipt))
                 as? [String: Any])
-        XCTAssertEqual(migratedReceipt["schema"] as? Int, 3)
+        XCTAssertEqual(migratedReceipt["schema"] as? Int, 4)
 
         let unrelatedToolResult = Data("""
 
@@ -1068,6 +1197,56 @@ final class DetachStateCommandTests: XCTestCase {
             separator: 0, omittingEmptySubsequences: false
         ).dropLast().map { String(decoding: $0, as: UTF8.self) }
         XCTAssertEqual(Array(workingValues[28..<30]), ["working", "answer-user"])
+    }
+
+    func testMetaSnapshotsReclassifyCachedClaudeEndTurnWithoutTranscriptChange() throws {
+        let root = temporaryDirectory.appendingPathComponent("completed-sessions")
+        let session = root.appendingPathComponent("detach-claude-completed")
+        try FileManager.default.createDirectory(at: session, withIntermediateDirectories: true)
+        let transcript = temporaryDirectory.appendingPathComponent("completed.jsonl")
+        try Data("""
+        {"type":"user","uuid":"request","message":{"role":"user","content":"go"}}
+        {"type":"assistant","uuid":"answer","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Done."}]}}
+
+        """.utf8).write(to: transcript)
+        try JSONSerialization.data(withJSONObject: [
+            "schema": 1, "session_name": "detach-claude-completed",
+            "project_dir": "/tmp/project", "status": "running",
+            "transcript_path": transcript.path,
+        ]).write(to: session.appendingPathComponent("meta.json"))
+
+        func turnFields() throws -> [String] {
+            let output = try DetachStateCommand.run(arguments: [
+                "meta", "snapshots", root.path, "--with-transcript-summary",
+            ])
+            let values = output.split(separator: 0, omittingEmptySubsequences: false)
+                .dropLast().map { String(decoding: $0, as: UTF8.self) }
+            return Array(values[28..<30])
+        }
+        XCTAssertEqual(try turnFields(), ["waiting", "answer"])
+        let receipt = session.appendingPathComponent(".transcript-summary-cache.json")
+        var legacy = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: receipt)) as? [String: Any])
+        // Keep the exact transcript identity, as an installed schema-3 helper
+        // does when it ignores end_turn and caches the preceding request.
+        legacy["schema"] = 3
+        legacy["agentTurnState"] = "working"
+        legacy["agentTurnID"] = "request"
+        try JSONSerialization.data(withJSONObject: legacy).write(to: receipt)
+
+        XCTAssertEqual(try turnFields(), ["waiting", "answer"])
+        XCTAssertEqual(try turnFields(), ["waiting", "answer"])
+        let updated = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: receipt)) as? [String: Any])
+        XCTAssertEqual(updated["schema"] as? Int, 4)
+
+        let handle = try FileHandle(forWritingTo: transcript)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data("""
+        {"type":"system","subtype":"turn_duration","uuid":"duration"}
+        """.utf8))
+        try handle.close()
+        XCTAssertEqual(try turnFields(), ["waiting", "answer"])
     }
 
     func testMetaSnapshotsFailClosedForNonFileTranscripts() throws {
@@ -1898,6 +2077,28 @@ final class DetachStateCommandTests: XCTestCase {
         ]
         XCTAssertThrowsError(try DetachStateCommand.run(arguments: unrequestedPID)) { error in
             XCTAssertEqual(error as? DetachStateCommandError, .invalidArguments)
+        }
+    }
+
+    func testHealthInspectionRejectsPIDReusedAfterReadinessButKeepsUnknownTime() throws {
+        let pid = String(ProcessInfo.processInfo.processIdentifier)
+        let arguments = [
+            "health", "evaluate", "--metadata-valid", "true",
+            "--runtime-identity-expected", "true", "--meta-status", "stopped",
+            "--tmux", "missing", "--run-token", "missing",
+            "--worker", "unknown", "--provider-process", "unknown",
+            "--heartbeat", "missing", "--checkpoint", "missing",
+            "--checkpoint-recoverable", "false", "--agent-session-known", "true",
+            "--inspect-processes", "true", "--worker-pid", pid,
+            "--provider-pid", pid, "--pane-pid", "-",
+        ]
+        for ready in ["2000-01-01T00:00:00Z", "-", "invalid"] {
+            let output = try DetachStateCommand.run(arguments: arguments + [
+                "--runtime-ready-at", ready,
+            ])
+            let result = try JSONDecoder().decode(SessionHealthAssessment.self, from: output)
+            XCTAssertEqual(result.effectiveStatus, ready.hasPrefix("2000") ? .stopped : .hung)
+            if !ready.hasPrefix("2000") { XCTAssertTrue(result.actions.isEmpty) }
         }
     }
 

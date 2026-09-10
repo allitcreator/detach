@@ -18,12 +18,18 @@ esac
 
 printf '%s\n' "$*" >>"$INVOCATIONS"
 
+if [ "${1:-}" = --terminal-size ]; then
+  [[ "${2:-}" =~ ^[1-9][0-9]{0,2}x[1-9][0-9]{0,2}$ ]] || exit 90
+  printf '%s\n' "$2" >"$ROOT/fake/initial-terminal-size"
+  shift 2
+fi
+
 if [ "$#" -eq 2 ] && [ "$1" = watch ] && [ "$2" = --json ]; then
   fixture_signature() {
     local marker
     printf '%s' "$(<"$STATE")"
     for marker in \
-      recovered resumed stopped-deleted new-session-started quick-chat-started; do
+      recovered resumed resume-completed stopped-deleted new-session-started quick-chat-started; do
       [ ! -e "$ROOT/fake/$marker" ] || printf ':%s' "$marker"
     done
   }
@@ -47,9 +53,12 @@ if [ "$#" -eq 2 ] && [ "$1" = list ] && [ "$2" = --json ]; then
     printf 'The session list is temporarily unavailable; retry from the dashboard.\n' >&2
     exit 75
   fi
-  completed='{"schema":1,"provider":"claude","session_name":"detach-claude-ui-completed","name":"UI Completed","effective_status":"completed","created_at":"2026-07-22T07:00:00Z","finished_at":"2026-07-22T07:30:00Z","exit_status":0,"agent_session_id":"a9f58f1d-1234-5678-9abc-def012342ed9","session_color":"#A855F7","power_protection_state":"allowed","health_reason":"checkpoint_stale","health_actions":["resume","delete"]}'
+  completed='{"schema":1,"provider":"claude","session_name":"detach-claude-ui-completed","name":"UI Completed","project_dir":"/tmp","effective_status":"completed","created_at":"2026-07-22T07:00:00Z","finished_at":"2026-07-22T07:30:00Z","exit_status":0,"agent_session_id":"a9f58f1d-1234-5678-9abc-def012342ed9","session_color":"#A855F7","power_protection_state":"allowed","health_reason":"checkpoint_stale","health_actions":["resume","delete"]}'
   if [ -f "$ROOT/fake/resumed" ]; then
-    completed='{"schema":1,"provider":"claude","session_name":"detach-claude-ui-completed","name":"UI Completed","effective_status":"running","created_at":"2026-07-22T07:00:00Z","agent_session_id":"a9f58f1d-1234-5678-9abc-def012342ed9","session_color":"#A855F7","power_protection_state":"protected","health_actions":["attach","stop"]}'
+    completed='{"schema":1,"provider":"claude","session_name":"detach-claude-ui-completed","name":"UI Completed","project_dir":"/tmp","effective_status":"starting","created_at":"2026-07-22T09:00:00Z","agent_session_id":"a9f58f1d-1234-5678-9abc-def012342ed9","session_color":"#A855F7","power_protection_state":"unknown","health_actions":["attach","stop"]}'
+    if [ -f "$ROOT/fake/resume-completed" ]; then
+      completed="${completed/\"starting\"/\"running\"}"
+    fi
   fi
   recoverable='{"schema":1,"provider":"codex","session_name":"detach-codex-ui-recoverable","name":"UI Recoverable","model":"gpt-ui-fixture-long-model-name","context_used_tokens":185000,"context_window":200000,"effective_status":"recoverable","created_at":"2026-07-22T07:40:00Z","finished_at":"2026-07-22T07:50:00Z","exit_status":1,"session_color":"#F97316","power_protection_state":"allowed","health_actions":["recover","delete"]}'
   if [ -f "$ROOT/fake/recovered" ]; then
@@ -257,10 +266,21 @@ if [ "$#" -eq 3 ] && [ "$1" = codex ] && [ "$2" = attach ] \
   exec /bin/cat
 fi
 
-if [ "$#" -eq 3 ] && [ "$1" = resume ] && [ "$2" = --detach ] \
-    && [ "$3" = a9f58f1d-1234-5678-9abc-def012342ed9 ]; then
+if [ "$#" -eq 6 ] && [ "$1" = claude ] && [ "$2" = resume ] \
+    && [ "$3" = --name ] && [ "$4" = detach-claude-ui-completed ] \
+    && [ "$5" = --detach ] && [ "$6" = a9f58f1d-1234-5678-9abc-def012342ed9 ]; then
   : >"$ROOT/fake/resumed"
   printf '%s\n' "$*" >>"$ACTIONS"
+  attempts=0
+  while [ ! -f "$ROOT/fake/release-resume" ] && [ "$attempts" -lt 200 ]; do
+    attempts=$((attempts + 1))
+    sleep 0.05
+  done
+  [ -f "$ROOT/fake/release-resume" ] || {
+    printf 'Resume terminal did not attach before readiness\n' >&2
+    exit 75
+  }
+  : >"$ROOT/fake/resume-completed"
   exit 0
 fi
 
