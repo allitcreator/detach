@@ -231,6 +231,8 @@ enum UIE2ETestDriver {
             cursorRestorePoint = nil
         }
         switch configuration.scenario {
+        case "terminal-width":
+            return await runTerminalWidthScenario(configuration: configuration, store: store)
         case "onboarding-first-run":
             return await runOnboardingFirstRun(
                 configuration: configuration,
@@ -251,6 +253,85 @@ enum UIE2ETestDriver {
                 store: store,
                 sessionLogSnapshots: sessionLogSnapshots,
                 shortcuts: shortcuts)
+        }
+    }
+
+    private static func runTerminalWidthScenario(
+        configuration: UIE2EConfiguration,
+        store: SessionStore
+    ) async -> Report {
+        var checks: [String] = []
+        let previousFrontmost = NSWorkspace.shared.frontmostApplication
+        let previousPolicy = NSApp.activationPolicy()
+        do {
+            guard let window = NSApp.windows.first(where: { $0.identifier?.rawValue == "main" }),
+                  NSApp.setActivationPolicy(.regular) else {
+                throw Failure(message: "terminal width test window is unavailable")
+            }
+            window.setContentSize(CGSize(width: 1100, height: 700))
+            try await activate(window)
+            guard store.sessions.isEmpty, store.state == .ok else {
+                throw Failure(message: "width scenario must start with an empty fresh session list")
+            }
+            try Data().write(to: configuration.root.appendingPathComponent(
+                "fake/enable-new-session-project"))
+            try await keyPress("n", keyCode: 45, modifiers: [.command])
+            try await waitUntil("Start from empty dashboard") {
+                find(identifier: "new-session-launch").map(isEnabled) == true
+            }
+            try await clickMeasuredControl(identifier: "new-session-launch", name: "start wide session")
+            try await waitUntil("new terminal attached") {
+                FileManager.default.fileExists(atPath: configuration.root
+                    .appendingPathComponent("fake/new-session-attach-ready").path)
+                    && find(identifier: "session-preview-terminal") is LocalProcessTerminalView
+            }
+            func assertWidth(_ filename: String) throws -> Int {
+                let hint = try String(contentsOf: configuration.root.appendingPathComponent(
+                    "fake/" + filename), encoding: .utf8)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                guard let terminal = find(identifier: "session-preview-terminal") as? LocalProcessTerminalView,
+                      let columns = hint.split(separator: "x").first.flatMap({ Int($0) }),
+                      columns == terminal.terminal.cols, columns > 80 else {
+                    throw Failure(message: "startup width differs from visible grid: \(hint)")
+                }
+                var actual = winsize()
+                guard ioctl(terminal.process.childfd, TIOCGWINSZ, &actual) == 0,
+                      Int(actual.ws_col) == columns else {
+                    throw Failure(message: "PTY width differs from visible terminal columns")
+                }
+                trace("startup width \(hint) matches visible grid")
+                return columns
+            }
+            let initialColumns = try assertWidth("new-session-terminal-size")
+            checks.append("terminal-start-uses-visible-width")
+            window.setContentSize(CGSize(width: 1400, height: 800))
+            try await waitUntil("terminal grows after resize") {
+                guard let terminal = find(identifier: "session-preview-terminal") as? LocalProcessTerminalView
+                else { return false }
+                var actual = winsize()
+                return terminal.terminal.cols > initialColumns
+                    && ioctl(terminal.process.childfd, TIOCGWINSZ, &actual) == 0
+                    && Int(actual.ws_col) == terminal.terminal.cols
+            }
+            checks.append("terminal-resize-updates-grid")
+            AppSettings.defaults.set("codex", forKey: AppSettings.quickChatProviderKey)
+            try await keyPress("t", keyCode: 17, modifiers: [.command])
+            try await waitUntil("quick chat attached") {
+                FileManager.default.fileExists(atPath: configuration.root
+                    .appendingPathComponent("fake/quick-session-ready").path)
+            }
+            let quickColumns = try assertWidth("quick-chat-terminal-size")
+            guard quickColumns > initialColumns else {
+                throw Failure(message: "Quick Chat reused stale width after resize")
+            }
+            checks.append("quick-chat-uses-visible-width")
+            try await restoreFocus(to: previousFrontmost, policy: previousPolicy)
+            return Report(schema: 1, passed: true, checks: checks, error: nil,
+                          accessibilityTree: snapshots())
+        } catch {
+            try? await restoreFocus(to: previousFrontmost, policy: previousPolicy)
+            return Report(schema: 1, passed: false, checks: checks,
+                          error: error.localizedDescription, accessibilityTree: snapshots())
         }
     }
 
