@@ -123,7 +123,7 @@ struct SessionDetailView: View {
             logView.layoutPriority(1)
             actionBar
         }
-        .padding(16)
+        .padding(SessionDetailLayout.contentInset)
         .onChange(of: session.id) { _, _ in
             interactionGeneration = UUID()
             logPoller = nil

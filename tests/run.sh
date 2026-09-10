@@ -1104,7 +1104,9 @@ if codex_part_selected lifecycle; then
   codex_scenario_event begin SC-SESSION-STOP-CODEX
   codex_scenario_event begin SC-SESSION-DELETE-CODEX
   COLORTERM=ambient-is-not-a-capability \
-    LC_ALL=C run_codex --name integration --detach -- "$literal_prompt"
+    LC_ALL=C "$DETACH" --terminal-size 137x47 codex start --name integration --detach -- "$literal_prompt"
+# Провайдер записывает размер до первого вывода и до подключения клиента.
+[ "$(awk '{print $1, $2}' "$FAKE_CODEX_ARGS_FILE.terminal-size")" = '47 137' ]
 
 wait_for_tmux_option "$SESSION" @detach_status running
 wait_for_tmux_option "$SESSION" set-titles on
