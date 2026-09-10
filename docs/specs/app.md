@@ -73,7 +73,9 @@ native copy, paste, and find. `Ctrl-C` and `Ctrl-V` reach providers as
 conventional control bytes. `Command-Left/Right` send `Ctrl-A/E`, and
 `Command-Backspace` sends `Ctrl-U`, regardless of enhanced keyboard mode.
 `Command-Up/Down` move the local viewport between OSC 133 prompt origins and
-do nothing when no origin exists; they never send shell-history keys.
+do nothing when no origin exists; they never send shell-history keys. The marks
+must reach SwiftTerm. Ordinary marks consumed by tmux are not available to this
+local navigation. Detach does not enable or configure prompt passthrough.
 `Shift-Return` sends tmux's stable CSI-u `S-Enter` input regardless of enhanced
 keyboard mode; the managed tmux toggle maps it to multiline input or ordinary
 Return. Handled presses suppress their paired releases across autorepeat and
