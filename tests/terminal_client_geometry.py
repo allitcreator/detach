@@ -81,7 +81,8 @@ def main():
         clients.remove(client)
 
     try:
-        assert tm('show-options', '-wv', '-t', session, 'window-size') == 'latest'
+        policy = tm('show-options', '-A', '-wv', '-t', session, 'window-size')
+        assert policy == 'latest', repr(policy)
         provider = tm('display-message', '-p', '-t', session, '#{pane_pid}')
         embedded = attach(132, 42, True)
         wait_for('embedded width', lambda: width_is(132))
