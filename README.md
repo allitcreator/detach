@@ -169,6 +169,11 @@ area with the terminal font, not the New session sheet. The detached start uses
 24 rows until attachment supplies the visible height. Resizing the window then
 uses the normal terminal and tmux size updates.
 
+With both an embedded and an external client attached, tmux uses the size of
+the last active client (`window-size latest`). Input in the embedded terminal
+restores its width. Closing the external client also restores the embedded
+size. Closing both clients leaves the managed provider running.
+
 Resume and Recover show the new terminal as soon as the session can accept an
 attachment. Startup checks continue, and Detach reports any startup error.
 With the current CLI, the provider receives the visible terminal size before

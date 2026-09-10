@@ -1911,11 +1911,12 @@ printf '{damaged rollout\n' >"$resume_rollout"
 export FAKE_CODEX_SLEEP=20
 export FAKE_CODEX_EXIT=0
 export FAKE_CODEX_FOREIGN_FIRST=0
-if ! run_codex recover --detach integration; then
+if ! "$DETACH" --terminal-size 151x39 codex recover --detach integration; then
   printf 'recover command returned a failure after starting the session\n' >&2
   exit 1
 fi
 wait_for_file_text "$FAKE_CODEX_ARGS_FILE" resume
+[ "$(awk '{print $1, $2}' "$FAKE_CODEX_ARGS_FILE.terminal-size")" = '39 151' ]
 require_file_line "$FAKE_CODEX_ARGS_FILE" resume
 require_file_line "$FAKE_CODEX_ARGS_FILE" "$expected_id"
 # A new run under the same name starts without the previous Stop intent.

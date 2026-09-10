@@ -69,6 +69,11 @@ A Quick chat requested while the window opens waits for that measurement.
 A new run uses 24 rows until attachment supplies the actual height. No lifecycle
 lock waits for a UI client. Normal terminal resize and tmux client selection
 continue to control the attached size.
+With concurrent embedded and external clients, `window-size latest` selects
+the last active client's size. Input in either client selects its width.
+Closing the external client restores the embedded size. Closing both clients
+preserves the managed provider. The public attach regression uses two real
+PTYs and checks resize, client removal, and provider survival.
 Resume and Recover pass the visible terminal size before the provider starts.
 The app measures this size with the terminal font and SwiftTerm layout. This
 prevents initial output from wrapping at the default detached window width.
