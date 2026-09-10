@@ -147,6 +147,12 @@ if [ "$#" -eq 10 ] && [ "$1" = client ] && [ "$2" = switch ] \
     ;;
   esac
   : >"$ROOT/fake/client-switch-requested"
+  attempts=0
+  while [ -f "$ROOT/fake/hold-client-switch" ] && [ "$attempts" -lt 200 ]; do
+    attempts=$((attempts + 1))
+    sleep 0.01
+  done
+  [ ! -f "$ROOT/fake/hold-client-switch" ] || exit 75
   # Keep the old complete terminal frame visible while the command is in
   # flight. A private FIFO models tmux socket delivery without cross-process
   # signals that the packaged app sandbox can reject.
@@ -258,6 +264,7 @@ fi
 
 if [ "$#" -eq 4 ] && [ "$1" = codex ] && [ "$2" = recover ] \
     && [ "$3" = --detach ] && [ "$4" = detach-codex-ui-recoverable ]; then
+  printf '%s\n' "$initial_terminal_size" >"$ROOT/fake/recover-terminal-size"
   : >"$ROOT/fake/recovered"
   printf '%s\n' "$*" >>"$ACTIONS"
   exit 0
@@ -276,6 +283,7 @@ fi
 if [ "$#" -eq 6 ] && [ "$1" = claude ] && [ "$2" = resume ] \
     && [ "$3" = --name ] && [ "$4" = detach-claude-ui-completed ] \
     && [ "$5" = --detach ] && [ "$6" = a9f58f1d-1234-5678-9abc-def012342ed9 ]; then
+  printf '%s\n' "$initial_terminal_size" >"$ROOT/fake/resume-terminal-size"
   : >"$ROOT/fake/resumed"
   printf '%s\n' "$*" >>"$ACTIONS"
   attempts=0

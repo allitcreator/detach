@@ -494,6 +494,8 @@ run_app_scenario() {
     }
     case "$check" in
       terminal-start-uses-visible-width|terminal-resize-updates-grid|\
+      terminal-recover-first-frame-uses-visible-width|terminal-resume-first-frame-uses-visible-width|\
+      terminal-late-switch-keeps-latest-selection-and-pty|\
       quick-chat-uses-visible-width|\
       background-app-starts-without-focus|disconnected-stop-blocks-action|\
       finished-selection-clears-scrollbar|session-uuid-copies-from-text-side|\
@@ -550,10 +552,13 @@ run_app_scenario() {
     "$((SECONDS - scenario_started))" "$attempt"
 }
 
-run_app_scenario terminal-width empty 10 \
+run_app_scenario terminal-width empty 20 \
   terminal-start-uses-visible-width \
   terminal-resize-updates-grid \
-  quick-chat-uses-visible-width
+  quick-chat-uses-visible-width \
+  terminal-recover-first-frame-uses-visible-width \
+  terminal-resume-first-frame-uses-visible-width \
+  terminal-late-switch-keeps-latest-selection-and-pty
 
 run_app_scenario main sessions 32 \
   background-app-starts-without-focus \

@@ -325,6 +325,81 @@ enum UIE2ETestDriver {
                 throw Failure(message: "Quick Chat reused stale width after resize")
             }
             checks.append("quick-chat-uses-visible-width")
+
+            // Проверить первые кадры существующих lifecycle-действий отдельно
+            // от общей UI-проверки и её несвязанных контролов.
+            let recoveredID = "detach-codex-ui-recoverable"
+            let resumedID = "detach-claude-ui-completed"
+            try Data().write(to: configuration.root.appendingPathComponent("fake/reconnect-ready"))
+            func select(_ id: String) async throws {
+                _ = try await clickUntilElement(
+                    try await element(identifier: "session-row-\(id)"),
+                    name: "terminal lifecycle row", resultIdentifier: "session-detail-\(id)")
+            }
+            func waitForFrame(_ id: String) async throws {
+                try await waitUntil("first visible frame for \(id)") {
+                    guard let terminal = find(identifier: "session-preview-terminal")
+                        as? LocalProcessTerminalView else { return false }
+                    return String(decoding: terminal.terminal.getBufferAsData(), as: UTF8.self)
+                        .contains(id)
+                }
+            }
+            try await select(recoveredID)
+            try await clickMeasuredControl(identifier: "session-action-recover-in-app", name: "Recover")
+            try await waitForFrame(recoveredID)
+            _ = try assertWidth("recover-terminal-size")
+            checks.append("terminal-recover-first-frame-uses-visible-width")
+
+            try await select(resumedID)
+            try await clickMeasuredControl(identifier: "session-action-resume-in-app", name: "Resume")
+            try await waitForFrame(resumedID)
+            _ = try assertWidth("resume-terminal-size")
+            guard !FileManager.default.fileExists(atPath: configuration.root
+                .appendingPathComponent("fake/resume-completed").path) else {
+                throw Failure(message: "Resume did not attach before readiness completed")
+            }
+            try Data().write(to: configuration.root.appendingPathComponent("fake/release-resume"))
+            checks.append("terminal-resume-first-frame-uses-visible-width")
+
+            guard let original = find(identifier: "session-preview-terminal")
+                as? LocalProcessTerminalView else { throw Failure(message: "live terminal missing") }
+            let pid = original.process.shellPid
+            let invocations = configuration.root.appendingPathComponent("fake/invocations.log")
+            func attachCount() throws -> Int {
+                try String(contentsOf: invocations, encoding: .utf8).split(separator: "\n")
+                    .filter { $0.contains(" attach --terminal-features sync ") }.count
+            }
+            let countBefore = try attachCount()
+            let holdSwitch = configuration.root.appendingPathComponent("fake/hold-client-switch")
+            let requested = configuration.root.appendingPathComponent("fake/client-switch-requested")
+            if FileManager.default.fileExists(atPath: requested.path) {
+                try FileManager.default.removeItem(at: requested)
+            }
+            try Data().write(to: holdSwitch)
+            try await select(recoveredID)
+            try await waitUntil("delayed client switch is in flight") {
+                FileManager.default.fileExists(atPath: requested.path)
+            }
+            // Вернуться до завершения первого switch; поздний ответ не должен
+            // отменить последнее выбранное назначение или создать второй PTY.
+            try await select(resumedID)
+            try FileManager.default.removeItem(at: holdSwitch)
+            try await waitUntil("latest selection wins after both switches") {
+                let lines = (try? String(contentsOf: invocations, encoding: .utf8)) ?? ""
+                let expected = "client switch --pid \(pid) --from \(recoveredID) --to \(resumedID) --provider claude"
+                let current = try? String(contentsOf: configuration.root
+                    .appendingPathComponent("fake/attach-client-current"), encoding: .utf8)
+                return lines.contains(expected)
+                    && current?.trimmingCharacters(in: .whitespacesAndNewlines) == resumedID
+                    && find(identifier: "session-detail-\(resumedID)") != nil
+            }
+            try await waitForFrame(resumedID)
+            guard let final = find(identifier: "session-preview-terminal") as? LocalProcessTerminalView,
+                  final === original, final.process.shellPid == pid,
+                  try attachCount() == countBefore else {
+                throw Failure(message: "superseded selection replaced the existing PTY")
+            }
+            checks.append("terminal-late-switch-keeps-latest-selection-and-pty")
             try await restoreFocus(to: previousFrontmost, policy: previousPolicy)
             return Report(schema: 1, passed: true, checks: checks, error: nil,
                           accessibilityTree: snapshots())
@@ -501,6 +576,19 @@ enum UIE2ETestDriver {
             let pasteboardSnapshot = captureGeneralPasteboard()
             defer { restoreGeneralPasteboard(pasteboardSnapshot) }
             let pasteboardGeneration = NSPasteboard.general.changeCount
+            guard let uuidView = elements().compactMap({ $0 as? UIE2EGeometryView })
+                .first(where: { $0.identifierValue == "session-uuid-chip" }) else {
+                throw Failure(message: "UUID chip has no measured view")
+            }
+            // Показать кнопку в горизонтальной ленте перед настоящим кликом.
+            uuidView.scrollToVisible(uuidView.bounds)
+            if let scroll = uuidView.enclosingScrollView {
+                scroll.reflectScrolledClipView(scroll.contentView)
+            }
+            try await waitUntil("UUID chip is visible for copying") {
+                uuidView.publishFrame()
+                return uuidView.visibleRect.contains(uuidView.bounds)
+            }
             try await clickMeasuredControl(
                 identifier: "session-uuid-chip",
                 name: "session UUID chip text",
@@ -816,7 +904,7 @@ enum UIE2ETestDriver {
             bulkDeleteButton = try await element(identifier: "finished-delete-button")
             try requireSemanticControl(bulkDeleteButton, name: "bulk delete action")
             let confirmDelete = try await clickUntilSheetButton(
-                bulkDeleteButton, name: "bulk delete action", label: "Delete")
+                bulkDeleteButton, name: "bulk delete action", label: L10n.string("Delete"))
             try requireSemanticControl(confirmDelete, name: "delete confirmation")
             try await clickUntil(
                 confirmDelete,
