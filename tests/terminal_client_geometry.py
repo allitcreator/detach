@@ -73,12 +73,15 @@ def main():
         process, fd = client
         process.terminate()
         try:
+            # tmux пишет финальную очистку терминала при выходе. Как SwiftTerm,
+            # продолжаем читать PTY, иначе tty drain может задержать завершение.
+            wait_for('attach exits after TERM', lambda: process.poll() is not None)
+        finally:
+            os.close(fd)
+            if process.poll() is None:
+                process.kill()
             process.wait(timeout=3)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait(timeout=3)
-        os.close(fd)
-        clients.remove(client)
+            clients.remove(client)
 
     try:
         policy = tm('show-options', '-A', '-wv', '-t', session, 'window-size')
